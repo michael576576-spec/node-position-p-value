@@ -105,19 +105,25 @@ def degrees(n: int, edges: tuple[tuple[int, int], ...]) -> list[int]:
     return result
 
 
-def detect_hubs(
-    network: Network, null_graphs: int, alpha: float, rng: random.Random
-) -> list[dict[str, int | float | bool]]:
-    """Compare each degree with all degrees pooled from G(n, observed m) graphs."""
+def build_null_degrees(n: int, m: int, null_graphs: int, rng: random.Random) -> list[int]:
+    """Pool and sort the degrees from independent G(n,m) graphs."""
     if null_graphs < 1:
         raise ValueError("null_graphs must be positive")
-    if not 0 < alpha < 1:
-        raise ValueError("alpha must be between 0 and 1")
-
     null_degrees: list[int] = []
     for _ in range(null_graphs):
-        null_degrees.extend(degrees(network.n, gnm_edges(network.n, network.m, rng)))
+        null_degrees.extend(degrees(n, gnm_edges(n, m, rng)))
     null_degrees.sort()
+    return null_degrees
+
+
+def score_network(
+    network: Network, null_degrees: list[int], alpha: float
+) -> list[dict[str, int | float | bool]]:
+    """Compare each node degree with a shared, sorted G(n,m) null distribution."""
+    if not 0 < alpha < 1:
+        raise ValueError("alpha must be between 0 and 1")
+    if not null_degrees:
+        raise ValueError("null_degrees cannot be empty")
 
     observed_degrees = degrees(network.n, network.edges)
     rows = []
@@ -142,6 +148,15 @@ def detect_hubs(
             }
         )
     return rows
+
+
+def detect_hubs(
+    network: Network, null_graphs: int, alpha: float, rng: random.Random
+) -> list[dict[str, int | float | bool]]:
+    """Compare degrees with a freshly simulated G(n, observed m) null."""
+    return score_network(
+        network, build_null_degrees(network.n, network.m, null_graphs, rng), alpha
+    )
 
 
 # Ten distinct parameter settings per class. Positive settings vary hub number
