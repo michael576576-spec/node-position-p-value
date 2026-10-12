@@ -55,7 +55,11 @@ def build_null_scores(
 
 
 def score_network(
-    network: Network, null_scores: list[float], alpha: float, metric: str = "degree"
+    network: Network,
+    null_scores: list[float],
+    alpha: float,
+    metric: str = "degree",
+    bonferroni_only: bool = False,
 ) -> list[dict[str, int | float | bool | str]]:
     """Compare node scores with a shared, sorted G(n,m) null distribution."""
     if not 0 < alpha < 1:
@@ -74,22 +78,24 @@ def score_network(
         score = observed_scores[node]
         # Upper tail includes ties. The added 1 avoids an estimated p-value of zero.
         at_least_as_large = len(null_scores) - bisect_left(null_scores, score)
-        p_value = (at_least_as_large + 1) / (len(null_scores) + 1)
-        bonferroni_p_value = min(1.0, p_value * network.n)
-        rows.append(
-            {
+        bonferroni_p_value = min(
+            1.0, network.n * (at_least_as_large + 1) / (len(null_scores) + 1)
+        )
+        row = {
                 "position": position,
                 "node": node,
                 "degree": int(observed_degrees[node]),
                 "metric": metric,
                 "centrality_score": score,
-                "p_value": p_value,
-                "predicted_hub": p_value < alpha,
                 "bonferroni_p_value": bonferroni_p_value,
                 "predicted_hub_bonferroni": bonferroni_p_value < alpha,
                 "true_hub": node in network.hubs,
-            }
-        )
+        }
+        if not bonferroni_only:
+            p_value = (at_least_as_large + 1) / (len(null_scores) + 1)
+            row["p_value"] = p_value
+            row["predicted_hub"] = p_value < alpha
+        rows.append(row)
     return rows
 
 

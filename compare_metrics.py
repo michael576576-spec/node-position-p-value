@@ -6,6 +6,7 @@ import argparse
 import csv
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 from centrality import METRICS
@@ -21,7 +22,9 @@ METRIC_LABELS = {
 
 def write_comparison_plot(output: Path, rows: list[dict[str, float | str]], metrics: tuple[str, ...]) -> bool:
     try:
-        os.environ.setdefault("MPLCONFIGDIR", str(output / ".matplotlib"))
+        os.environ.setdefault(
+            "MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / "node_position_pvalue_matplotlib")
+        )
         import matplotlib
 
         matplotlib.use("Agg")
@@ -87,6 +90,8 @@ def main() -> None:
             args.output / metric,
             metric,
             quiet=True,
+            detail_output=False,
+            save_edges=metric == "degree",
         )
         combined.extend({"metric": metric, **row} for row in summary)
 
@@ -100,7 +105,7 @@ def main() -> None:
         "",
         f"固定 N={args.n}、M={args.m}、植入中心节点数={args.hubs}；每个倍率重复 {args.repetitions} 次。",
         f"每种指标使用相同的目标图随机种子和 {args.null_graphs} 张 GNM 零模型图。",
-        f"以下均使用 Bonferroni 阈值 p < {args.alpha}/{args.n}。",
+        f"以下均使用 Bonferroni 校正 p 值 < {args.alpha}（等价于未校正 p 值 < {args.alpha}/{args.n}）。",
         "",
     ]
     lines.extend(
@@ -121,7 +126,7 @@ def main() -> None:
                 f"{row['bonf_exact']:.1%} |"
             )
     lines.append("")
-    lines.append("各指标目录另有原始阈值结果、逐次记录、逐节点 p 值和边列表。")
+    lines.append("各指标目录保留逐次记录和逐节点校正 p 值；共用目标图的边列表位于 degree 目录。")
     (args.output / "comparison.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     plot_written = write_comparison_plot(args.output, combined, metrics)
     print(f"Comparison saved to {args.output}; plot written: {plot_written}")

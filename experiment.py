@@ -294,7 +294,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     output = args.output or (
-        Path("experiment_results")
+        Path("experiment_results/basic_experiment")
         if args.metric == "degree"
         else Path("experiment_results") / f"{args.metric}_experiment"
     )

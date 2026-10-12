@@ -13,6 +13,7 @@ import math
 import os
 import random
 import sys
+import tempfile
 from bisect import bisect_left
 from dataclasses import dataclass
 from itertools import accumulate
@@ -113,7 +114,9 @@ def write_csv(path: Path, rows: list[dict[str, object]], columns: list[str]) -> 
 
 def write_plot(output: Path, summary: list[dict[str, float]]) -> bool:
     try:
-        os.environ.setdefault("MPLCONFIGDIR", str(output / ".matplotlib"))
+        os.environ.setdefault(
+            "MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / "node_position_pvalue_matplotlib")
+        )
         import matplotlib
 
         matplotlib.use("Agg")
@@ -128,22 +131,16 @@ def write_plot(output: Path, summary: list[dict[str, float]]) -> bool:
         ax.grid(alpha=0.25)
         ax.set_xlabel("Hub / ordinary edge probability ratio")
 
-    axes[0].plot(ratios, [row["raw_recall"] for row in summary], "o--", label="Raw p < 0.05")
-    axes[0].plot(ratios, [row["bonf_recall"] for row in summary], "o-", label="Bonferroni")
+    axes[0].plot(ratios, [row["bonf_recall"] for row in summary], "o-")
     axes[0].set_ylabel("Planted-hub recall")
     axes[0].set_ylim(-0.04, 1.04)
-    axes[0].legend()
 
-    axes[1].plot(ratios, [row["raw_mean_fp"] for row in summary], "o--", label="Raw p < 0.05")
-    axes[1].plot(ratios, [row["bonf_mean_fp"] for row in summary], "o-", label="Bonferroni")
+    axes[1].plot(ratios, [row["bonf_mean_fp"] for row in summary], "o-")
     axes[1].set_ylabel("Mean false reports per graph")
-    axes[1].legend()
 
-    axes[2].plot(ratios, [row["raw_exact"] for row in summary], "o--", label="Raw p < 0.05")
-    axes[2].plot(ratios, [row["bonf_exact"] for row in summary], "o-", label="Bonferroni")
+    axes[2].plot(ratios, [row["bonf_exact"] for row in summary], "o-")
     axes[2].set_ylabel("Exact recovery rate")
     axes[2].set_ylim(-0.04, 1.04)
-    axes[2].legend()
 
     fig.tight_layout()
     fig.savefig(output / "ratio_sweep.png", dpi=180)
@@ -164,6 +161,8 @@ def run_sweep(
     output: Path,
     metric: str = "degree",
     quiet: bool = False,
+    detail_output: bool = True,
+    save_edges: bool = True,
 ) -> list[dict[str, float]]:
     if repetitions < 1:
         raise ValueError("repetitions must be positive")
@@ -201,9 +200,7 @@ def run_sweep(
             network = Network(
                 graph_name, n, edges, hubs, m, k, model.hub_probability, model.ordinary_probability
             )
-            results = score_network(network, null_scores, alpha, metric)
-            raw_reported = sum(bool(row["predicted_hub"]) for row in results)
-            raw_tp = sum(bool(row["predicted_hub"] and row["true_hub"]) for row in results)
+            results = score_network(network, null_scores, alpha, metric, bonferroni_only=True)
             bonf_reported = sum(bool(row["predicted_hub_bonferroni"]) for row in results)
             bonf_tp = sum(
                 bool(row["predicted_hub_bonferroni"] and row["true_hub"]) for row in results
@@ -216,21 +213,18 @@ def run_sweep(
                     "hubs": ";".join(map(str, sorted(hubs))),
                     "hub_related_edges": hub_edge_count,
                     "ordinary_edges": m - hub_edge_count,
-                    "raw_reported": raw_reported,
-                    "raw_true_positives": raw_tp,
-                    "raw_false_positives": raw_reported - raw_tp,
                     "bonf_reported": bonf_reported,
                     "bonf_true_positives": bonf_tp,
                     "bonf_false_positives": bonf_reported - bonf_tp,
                 }
             )
             node_rows.extend({"graph": graph_name, "ratio": ratio, **row} for row in results)
-            edge_rows.extend({"graph": graph_name, "source": u, "target": v} for u, v in edges)
+            if save_edges:
+                edge_rows.extend({"graph": graph_name, "source": u, "target": v} for u, v in edges)
 
     summary: list[dict[str, float]] = []
     for ratio in ratios:
         rows = [row for row in replicate_rows if row["ratio"] == ratio]
-        raw_tp = sum(int(row["raw_true_positives"]) for row in rows)
         bonf_tp = sum(int(row["bonf_true_positives"]) for row in rows)
         model = distributions[ratio]
         summary.append(
@@ -238,13 +232,6 @@ def run_sweep(
                 "ratio": ratio,
                 "ordinary_probability": model.ordinary_probability,
                 "hub_probability": model.hub_probability,
-                "raw_recall": raw_tp / (repetitions * k),
-                "raw_mean_reported": sum(int(row["raw_reported"]) for row in rows) / repetitions,
-                "raw_mean_fp": sum(int(row["raw_false_positives"]) for row in rows) / repetitions,
-                "raw_exact": sum(
-                    row["raw_true_positives"] == k and row["raw_false_positives"] == 0
-                    for row in rows
-                ) / repetitions,
                 "bonf_recall": bonf_tp / (repetitions * k),
                 "bonf_mean_reported": sum(int(row["bonf_reported"]) for row in rows) / repetitions,
                 "bonf_mean_fp": sum(int(row["bonf_false_positives"]) for row in rows) / repetitions,
@@ -255,20 +242,19 @@ def run_sweep(
             }
         )
 
-    summary_columns = list(summary[0])
-    write_csv(output / "summary.csv", summary, summary_columns)
     write_csv(output / "replicates.csv", replicate_rows, list(replicate_rows[0]))
     write_csv(output / "node_results.csv", node_rows, list(node_rows[0]))
-    write_csv(output / "network_edges.csv", edge_rows, ["graph", "source", "target"])
+    if save_edges:
+        write_csv(output / "network_edges.csv", edge_rows, ["graph", "source", "target"])
+    if not detail_output:
+        return summary
+
+    write_csv(output / "summary.csv", summary, list(summary[0]))
 
     md_columns = [
         ("倍率", "ratio", "g"),
         ("普通边概率", "ordinary_probability", ".4f"),
         ("中心边概率", "hub_probability", ".4f"),
-        ("原始检出率", "raw_recall", ".1%"),
-        ("原始平均报告数", "raw_mean_reported", ".2f"),
-        ("原始平均误报数", "raw_mean_fp", ".2f"),
-        ("原始完全恢复率", "raw_exact", ".1%"),
         ("Bonferroni检出率", "bonf_recall", ".1%"),
         ("Bonferroni平均报告数", "bonf_mean_reported", ".2f"),
         ("Bonferroni平均误报数", "bonf_mean_fp", ".2f"),
@@ -280,7 +266,7 @@ def run_sweep(
         f"固定 N={n}、M={m}、中心节点数={k}；每个倍率生成 {repetitions} 张图。"
         f"所有目标图共用 {null_graphs} 张 GNM({n},{m}) 图构成的经验零分布。",
         f"中心性指标：{metric}。",
-        f"原始判定阈值为 p < {alpha}；Bonferroni 判定阈值为 p < {alpha}/{n}。",
+        f"只报告 Bonferroni 校正结果：校正 p 值 < {alpha}（等价于未校正 p 值 < {alpha}/{n}）。",
         "每张目标图恰好有 M 条边。倍率指中心相关边与普通边的边际连边概率之比；倍率 1 对应 GNM。",
         "同一重复编号在不同倍率下共用中心节点及随机边顺序，以便比较倍率变化。",
         "",
