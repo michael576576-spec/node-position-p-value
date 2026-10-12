@@ -1,4 +1,4 @@
-"""Degree-based empirical p-values for simulated network hubs.
+"""Empirical centrality p-values for simulated network hubs.
 
 Run ``python experiment.py`` to evaluate 10 negative and 10 positive parameter
 sets, with 50 independently seeded graphs per setting.
@@ -10,41 +10,10 @@ import argparse
 import csv
 import random
 import sys
-from bisect import bisect_left
-from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 
-
-@dataclass(frozen=True)
-class Network:
-    name: str
-    n: int
-    edges: tuple[tuple[int, int], ...]
-    hubs: frozenset[int]
-    target_m: int
-    hub_count: int
-    hub_probability: float | None
-    background_probability: float | None
-
-    @property
-    def m(self) -> int:
-        return len(self.edges)
-
-
-@lru_cache(maxsize=None)
-def possible_edges(n: int) -> tuple[tuple[int, int], ...]:
-    if n < 2:
-        raise ValueError("n must be at least 2")
-    return tuple((u, v) for u in range(n) for v in range(u + 1, n))
-
-
-def gnm_edges(n: int, m: int, rng: random.Random) -> tuple[tuple[int, int], ...]:
-    """Sample G(n,m): every simple graph with n vertices and m edges is equally likely."""
-    candidates = possible_edges(n)
-    if not 0 <= m <= len(candidates):
-        raise ValueError(f"m must be between 0 and {len(candidates)}")
-    return tuple(rng.sample(candidates, m))
+from centrality import METRICS
+from network_core import Network, detect_hubs, gnm_edges, possible_edges
 
 
 def make_negative(name: str, n: int, m: int, rng: random.Random) -> Network:
@@ -97,68 +66,6 @@ def make_positive(
     )
 
 
-def degrees(n: int, edges: tuple[tuple[int, int], ...]) -> list[int]:
-    result = [0] * n
-    for u, v in edges:
-        result[u] += 1
-        result[v] += 1
-    return result
-
-
-def build_null_degrees(n: int, m: int, null_graphs: int, rng: random.Random) -> list[int]:
-    """Pool and sort the degrees from independent G(n,m) graphs."""
-    if null_graphs < 1:
-        raise ValueError("null_graphs must be positive")
-    null_degrees: list[int] = []
-    for _ in range(null_graphs):
-        null_degrees.extend(degrees(n, gnm_edges(n, m, rng)))
-    null_degrees.sort()
-    return null_degrees
-
-
-def score_network(
-    network: Network, null_degrees: list[int], alpha: float
-) -> list[dict[str, int | float | bool]]:
-    """Compare each node degree with a shared, sorted G(n,m) null distribution."""
-    if not 0 < alpha < 1:
-        raise ValueError("alpha must be between 0 and 1")
-    if not null_degrees:
-        raise ValueError("null_degrees cannot be empty")
-
-    observed_degrees = degrees(network.n, network.edges)
-    rows = []
-    for position, node in enumerate(
-        sorted(range(network.n), key=lambda u: (-observed_degrees[u], u)), start=1
-    ):
-        degree = observed_degrees[node]
-        # Upper tail includes ties. The added 1 avoids an estimated p-value of zero.
-        at_least_as_large = len(null_degrees) - bisect_left(null_degrees, degree)
-        p_value = (at_least_as_large + 1) / (len(null_degrees) + 1)
-        bonferroni_p_value = min(1.0, p_value * network.n)
-        rows.append(
-            {
-                "position": position,
-                "node": node,
-                "degree": degree,
-                "p_value": p_value,
-                "predicted_hub": p_value < alpha,
-                "bonferroni_p_value": bonferroni_p_value,
-                "predicted_hub_bonferroni": bonferroni_p_value < alpha,
-                "true_hub": node in network.hubs,
-            }
-        )
-    return rows
-
-
-def detect_hubs(
-    network: Network, null_graphs: int, alpha: float, rng: random.Random
-) -> list[dict[str, int | float | bool]]:
-    """Compare degrees with a freshly simulated G(n, observed m) null."""
-    return score_network(
-        network, build_null_degrees(network.n, network.m, null_graphs, rng), alpha
-    )
-
-
 # Ten distinct parameter settings per class. Positive settings vary hub number
 # and edge probability ratio; both classes vary N and target M.
 SPECS = (
@@ -204,7 +111,14 @@ def write_csv(path: Path, rows: list[dict[str, object]], fieldnames: list[str]) 
         writer.writerows(rows)
 
 
-def run_experiment(seed: int, null_graphs: int, alpha: float, output: Path, repetitions: int = 50) -> None:
+def run_experiment(
+    seed: int,
+    null_graphs: int,
+    alpha: float,
+    output: Path,
+    repetitions: int = 50,
+    metric: str = "degree",
+) -> None:
     if repetitions < 1:
         raise ValueError("repetitions must be positive")
 
@@ -235,7 +149,7 @@ def run_experiment(seed: int, null_graphs: int, alpha: float, output: Path, repe
                     if kind == "negative"
                     else make_positive(replicate_name, n, target_m, hub_count, ratio, graph_rng)
                 )
-                results = detect_hubs(network, null_graphs, alpha, random.Random(null_seed))
+                results = detect_hubs(network, null_graphs, alpha, random.Random(null_seed), metric)
                 reported = sum(bool(row["predicted_hub"]) for row in results)
                 true_positives = sum(
                     bool(row["predicted_hub"] and row["true_hub"]) for row in results
@@ -332,7 +246,7 @@ def run_experiment(seed: int, null_graphs: int, alpha: float, output: Path, repe
         for row in summary_rows
     )
     markdown_table = "\n".join(markdown_lines) + (
-        f"\n\n每组参数独立模拟 {repetitions} 张图。“平均边数”和“报告的中心节点数”"
+        f"\n\n中心性指标：{metric}。每组参数独立模拟 {repetitions} 张图。“平均边数”和“报告的中心节点数”"
         "均为这些图的平均值；每张图的零分布按其实际边数构造。\n"
     )
     (output / "network_summary.md").write_text(markdown_table, encoding="utf-8")
@@ -348,7 +262,7 @@ def run_experiment(seed: int, null_graphs: int, alpha: float, output: Path, repe
     positive_rows = replicate_rows["positive"]
     total_planted = repetitions * sum(spec[2] for spec in SPECS)
     comparison_notes = (
-        f"\n\n每组独立模拟 {repetitions} 张图；原始阈值为 p < {alpha}，"
+        f"\n\n中心性指标：{metric}。每组独立模拟 {repetitions} 张图；原始阈值为 p < {alpha}，"
         f"Bonferroni 阈值为 p < {alpha}/N。\n\n"
         "负例：无误报的网络数由 "
         f"{sum(row['reported_hubs'] == 0 for row in negative_rows)}/{len(negative_rows)} "
@@ -373,12 +287,18 @@ def main() -> None:
         sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seed", type=int, default=42, help="random seed (default: 42)")
+    parser.add_argument("--metric", choices=METRICS, default="degree")
     parser.add_argument("--null-graphs", type=int, default=100, help="GNM null graphs per network")
     parser.add_argument("--repetitions", type=int, default=50, help="graphs per setting")
     parser.add_argument("--alpha", type=float, default=0.05, help="p-value threshold")
-    parser.add_argument("--output", type=Path, default=Path("experiment_results"))
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    run_experiment(args.seed, args.null_graphs, args.alpha, args.output, args.repetitions)
+    output = args.output or (
+        Path("experiment_results")
+        if args.metric == "degree"
+        else Path("experiment_results") / f"{args.metric}_experiment"
+    )
+    run_experiment(args.seed, args.null_graphs, args.alpha, output, args.repetitions, args.metric)
 
 
 if __name__ == "__main__":
