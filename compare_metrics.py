@@ -32,10 +32,11 @@ def write_comparison_plot(output: Path, rows: list[dict[str, float | str]], metr
     except ImportError:
         return False
 
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
     plots = (
-        ("bonf_recall", "Planted-hub recall", (-0.04, 1.04)),
-        ("bonf_exact", "Exact recovery rate", (-0.04, 1.04)),
+        ("bonf_recall", "Recall", (-0.04, 1.04)),
+        ("bonf_precision", "Precision", (-0.04, 1.04)),
+        ("bonf_f1", "F1 score", (-0.04, 1.04)),
     )
     for metric in metrics:
         metric_rows = [row for row in rows if row["metric"] == metric]
@@ -110,11 +111,12 @@ def main() -> None:
     ]
     lines.extend(
         [
-            "检出率 = 检出的植入中心节点数 / 植入中心节点总数；平均报告数和平均误报数均按每张图计算。",
-            "完全恢复率 = 检出全部植入中心节点且没有误报的图所占比例。",
+            "召回率、精确率和 F1 先逐图计算，再对每个倍率的 50 张图取平均（图级 macro 汇总）。",
+            "若某张图没有报告节点，其精确率和 F1 记为 0。",
+            "平均报告数和平均误报数均按每张图计算。",
             "",
-            "| 倍率 | 中心性指标 | 检出率 | 平均报告数 | 平均误报数 | 完全恢复率 |",
-            "| --- | --- | ---: | ---: | ---: | ---: |",
+            "| 倍率 | 中心性指标 | 召回率 | 精确率 | F1 | 平均报告数 | 平均误报数 |",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     for ratio in ratios:
@@ -122,8 +124,8 @@ def main() -> None:
             row = next(row for row in combined if row["metric"] == metric and row["ratio"] == ratio)
             lines.append(
                 f"| {ratio:g} | {METRIC_LABELS[metric]} | {row['bonf_recall']:.1%} | "
-                f"{row['bonf_mean_reported']:.2f} | {row['bonf_mean_fp']:.2f} | "
-                f"{row['bonf_exact']:.1%} |"
+                f"{row['bonf_precision']:.1%} | {row['bonf_f1']:.1%} | "
+                f"{row['bonf_mean_reported']:.2f} | {row['bonf_mean_fp']:.2f} |"
             )
     lines.append("")
     lines.append("各指标目录保留逐次记录和逐节点校正 p 值；共用目标图的边列表位于 degree 目录。")

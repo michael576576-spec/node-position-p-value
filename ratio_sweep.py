@@ -112,6 +112,14 @@ def write_csv(path: Path, rows: list[dict[str, object]], columns: list[str]) -> 
         writer.writerows(rows)
 
 
+def classification_rates(tp: int, fp: int, fn: int) -> tuple[float, float, float]:
+    """Return recall, precision, and F1; undefined precision is set to zero."""
+    recall = tp / (tp + fn) if tp + fn else 0.0
+    precision = tp / (tp + fp) if tp + fp else 0.0
+    f1 = 2 * tp / (2 * tp + fp + fn) if 2 * tp + fp + fn else 0.0
+    return recall, precision, f1
+
+
 def write_plot(output: Path, summary: list[dict[str, float]]) -> bool:
     try:
         os.environ.setdefault(
@@ -135,11 +143,12 @@ def write_plot(output: Path, summary: list[dict[str, float]]) -> bool:
     axes[0].set_ylabel("Planted-hub recall")
     axes[0].set_ylim(-0.04, 1.04)
 
-    axes[1].plot(ratios, [row["bonf_mean_fp"] for row in summary], "o-")
-    axes[1].set_ylabel("Mean false reports per graph")
+    axes[1].plot(ratios, [row["bonf_precision"] for row in summary], "o-")
+    axes[1].set_ylabel("Precision")
+    axes[1].set_ylim(-0.04, 1.04)
 
-    axes[2].plot(ratios, [row["bonf_exact"] for row in summary], "o-")
-    axes[2].set_ylabel("Exact recovery rate")
+    axes[2].plot(ratios, [row["bonf_f1"] for row in summary], "o-")
+    axes[2].set_ylabel("F1 score")
     axes[2].set_ylim(-0.04, 1.04)
 
     fig.tight_layout()
@@ -205,6 +214,11 @@ def run_sweep(
             bonf_tp = sum(
                 bool(row["predicted_hub_bonferroni"] and row["true_hub"]) for row in results
             )
+            bonf_fp = bonf_reported - bonf_tp
+            bonf_fn = k - bonf_tp
+            bonf_recall, bonf_precision, bonf_f1 = classification_rates(
+                bonf_tp, bonf_fp, bonf_fn
+            )
             replicate_rows.append(
                 {
                     "ratio": ratio,
@@ -215,7 +229,11 @@ def run_sweep(
                     "ordinary_edges": m - hub_edge_count,
                     "bonf_reported": bonf_reported,
                     "bonf_true_positives": bonf_tp,
-                    "bonf_false_positives": bonf_reported - bonf_tp,
+                    "bonf_false_positives": bonf_fp,
+                    "bonf_false_negatives": bonf_fn,
+                    "bonf_recall": bonf_recall,
+                    "bonf_precision": bonf_precision,
+                    "bonf_f1": bonf_f1,
                 }
             )
             node_rows.extend({"graph": graph_name, "ratio": ratio, **row} for row in results)
@@ -225,20 +243,18 @@ def run_sweep(
     summary: list[dict[str, float]] = []
     for ratio in ratios:
         rows = [row for row in replicate_rows if row["ratio"] == ratio]
-        bonf_tp = sum(int(row["bonf_true_positives"]) for row in rows)
+        bonf_fp = sum(int(row["bonf_false_positives"]) for row in rows)
         model = distributions[ratio]
         summary.append(
             {
                 "ratio": ratio,
                 "ordinary_probability": model.ordinary_probability,
                 "hub_probability": model.hub_probability,
-                "bonf_recall": bonf_tp / (repetitions * k),
+                "bonf_recall": sum(float(row["bonf_recall"]) for row in rows) / repetitions,
+                "bonf_precision": sum(float(row["bonf_precision"]) for row in rows) / repetitions,
+                "bonf_f1": sum(float(row["bonf_f1"]) for row in rows) / repetitions,
                 "bonf_mean_reported": sum(int(row["bonf_reported"]) for row in rows) / repetitions,
-                "bonf_mean_fp": sum(int(row["bonf_false_positives"]) for row in rows) / repetitions,
-                "bonf_exact": sum(
-                    row["bonf_true_positives"] == k and row["bonf_false_positives"] == 0
-                    for row in rows
-                ) / repetitions,
+                "bonf_mean_fp": bonf_fp / repetitions,
             }
         )
 
@@ -256,9 +272,10 @@ def run_sweep(
         ("普通边概率", "ordinary_probability", ".4f"),
         ("中心边概率", "hub_probability", ".4f"),
         ("Bonferroni检出率", "bonf_recall", ".1%"),
+        ("Bonferroni精确率", "bonf_precision", ".1%"),
+        ("Bonferroni F1", "bonf_f1", ".1%"),
         ("Bonferroni平均报告数", "bonf_mean_reported", ".2f"),
         ("Bonferroni平均误报数", "bonf_mean_fp", ".2f"),
-        ("Bonferroni完全恢复率", "bonf_exact", ".1%"),
     ]
     lines = [
         f"# 固定 N、M、中心节点数的连边概率倍率实验",
@@ -280,8 +297,8 @@ def run_sweep(
     lines.extend(
         [
             "",
-            "检出率 = 检出的植入中心节点数 / 所有植入中心节点数；"
-            "完全恢复率 = 同时找全植入节点且没有误报的目标图比例。",
+            "召回率、精确率和 F1 先逐图计算，再对本倍率的图取平均；"
+            "单图没有报告任何节点时，精确率和 F1 记为 0。",
             "",
         ]
     )
