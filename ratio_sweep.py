@@ -18,7 +18,8 @@ from dataclasses import dataclass
 from itertools import accumulate
 from pathlib import Path
 
-from experiment import Network, build_null_degrees, possible_edges, score_network
+from centrality import METRICS
+from network_core import Network, build_null_scores, possible_edges, score_network
 
 
 DEFAULT_RATIOS = (1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 6.0)
@@ -161,7 +162,9 @@ def run_sweep(
     alpha: float,
     seed: int,
     output: Path,
-) -> None:
+    metric: str = "degree",
+    quiet: bool = False,
+) -> list[dict[str, float]]:
     if repetitions < 1:
         raise ValueError("repetitions must be positive")
     if not 0 < alpha < 1:
@@ -171,7 +174,9 @@ def run_sweep(
 
     distributions = {ratio: hub_edge_distribution(n, m, k, ratio) for ratio in ratios}
     output.mkdir(parents=True, exist_ok=True)
-    null_degrees = build_null_degrees(n, m, null_graphs, random.Random(f"{seed}:null:{n}:{m}"))
+    null_scores = build_null_scores(
+        n, m, null_graphs, random.Random(f"{seed}:null:{n}:{m}"), metric
+    )
 
     replicate_rows: list[dict[str, object]] = []
     node_rows: list[dict[str, object]] = []
@@ -196,7 +201,7 @@ def run_sweep(
             network = Network(
                 graph_name, n, edges, hubs, m, k, model.hub_probability, model.ordinary_probability
             )
-            results = score_network(network, null_degrees, alpha)
+            results = score_network(network, null_scores, alpha, metric)
             raw_reported = sum(bool(row["predicted_hub"]) for row in results)
             raw_tp = sum(bool(row["predicted_hub"] and row["true_hub"]) for row in results)
             bonf_reported = sum(bool(row["predicted_hub_bonferroni"]) for row in results)
@@ -274,6 +279,7 @@ def run_sweep(
         "",
         f"固定 N={n}、M={m}、中心节点数={k}；每个倍率生成 {repetitions} 张图。"
         f"所有目标图共用 {null_graphs} 张 GNM({n},{m}) 图构成的经验零分布。",
+        f"中心性指标：{metric}。",
         f"原始判定阈值为 p < {alpha}；Bonferroni 判定阈值为 p < {alpha}/{n}。",
         "每张目标图恰好有 M 条边。倍率指中心相关边与普通边的边际连边概率之比；倍率 1 对应 GNM。",
         "同一重复编号在不同倍率下共用中心节点及随机边顺序，以便比较倍率变化。",
@@ -295,8 +301,10 @@ def run_sweep(
     )
     (output / "summary.md").write_text("\n".join(lines), encoding="utf-8")
     plot_written = write_plot(output, summary)
-    print("\n".join(lines))
-    print(f"Results saved to {output}; plot written: {plot_written}")
+    if not quiet:
+        print("\n".join(lines))
+        print(f"Results saved to {output}; plot written: {plot_written}")
+    return summary
 
 
 def main() -> None:
@@ -311,8 +319,12 @@ def main() -> None:
     parser.add_argument("--null-graphs", type=int, default=1000)
     parser.add_argument("--alpha", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--output", type=Path, default=Path("experiment_results/ratio_sweep"))
+    parser.add_argument("--metric", choices=METRICS, default="degree")
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    output = args.output or Path("experiment_results") / (
+        "ratio_sweep" if args.metric == "degree" else f"ratio_sweep_{args.metric}"
+    )
     run_sweep(
         args.n,
         args.m,
@@ -322,7 +334,8 @@ def main() -> None:
         args.null_graphs,
         args.alpha,
         args.seed,
-        args.output,
+        output,
+        args.metric,
     )
 
 
