@@ -212,17 +212,6 @@ def run_sweep(
 
     distributions = {ratio: hub_edge_distribution(n, m, k, ratio) for ratio in ratios}
     output.mkdir(parents=True, exist_ok=True)
-    shared_null = None
-    if null_model == "gnm":
-        # The GNM generator uses only n and m; give it a graph with m edges.
-        reference_network = Network(
-            "null_reference", n, possible_edges(n)[:m], frozenset(), m, 0, None, None
-        )
-        shared_null = build_null_distribution(
-            reference_network, null_graphs, random.Random(f"{seed}:null:{n}:{m}"), metric,
-            null_model,
-        )
-
     replicate_rows: list[dict[str, object]] = []
     node_rows: list[dict[str, object]] = []
     edge_rows: list[dict[str, object]] = []
@@ -246,7 +235,7 @@ def run_sweep(
             network = Network(
                 graph_name, n, edges, hubs, m, k, model.hub_probability, model.ordinary_probability
             )
-            null_scores = shared_null or build_null_distribution(
+            null_scores = build_null_distribution(
                 network, null_graphs,
                 random.Random(f"{seed}:null:{n}:{m}:{repetition}:{ratio:g}:{null_model}"),
                 metric, null_model,
@@ -323,7 +312,7 @@ def run_sweep(
         f"# 固定 N、M、中心节点数的连边概率倍率实验",
         "",
         f"固定 N={n}、M={m}、中心节点数={k}；每个倍率生成 {repetitions} 张图。"
-        + (f"所有目标图共用 {null_graphs} 张 GNM({n},{m}) 图构成的经验零分布。"
+        + (f"每张目标图单独生成 {null_graphs} 张 GNM({n},{m}) 图构成经验零分布。"
            if null_model == "gnm" else
            f"零模型：{null_model}；每张目标图生成 {null_graphs} 张零模型图，并汇总全部节点分数估计 p 值。"),
         f"中心性指标：{metric}。",
@@ -376,7 +365,7 @@ def main() -> None:
         parser.error("--null-graphs must be positive")
     null_graphs = args.null_graphs if args.null_graphs is not None else 1000
     output = args.output or Path("experiment_results") / (
-        ("ratio_sweep" if args.metric == "degree" else f"ratio_sweep_{args.metric}")
+        ("ratio_sweep_per_target" if args.metric == "degree" else f"ratio_sweep_{args.metric}_per_target")
         if args.null_model == "gnm" else f"ratio_sweep_{args.metric}_{args.null_model}"
     )
     run_sweep(

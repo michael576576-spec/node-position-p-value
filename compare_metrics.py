@@ -80,7 +80,7 @@ def main() -> None:
         parser.error("--null-graphs must be positive")
     null_graphs = args.null_graphs if args.null_graphs is not None else 1000
     args.output = args.output or Path("experiment_results") / (
-        "metric_comparison" if args.null_model == "gnm"
+        "metric_comparison_per_target" if args.null_model == "gnm"
         else f"metric_comparison_{args.null_model}"
     )
     metrics = tuple(dict.fromkeys(args.metrics))
@@ -117,7 +117,8 @@ def main() -> None:
         "# 中心性指标比较",
         "",
         f"固定 N={args.n}、M={args.m}、植入中心节点数={args.hubs}；每个倍率重复 {args.repetitions} 次。",
-        (f"每种指标使用相同的目标图随机种子和 {null_graphs} 张 GNM 零模型图。"
+        (f"每种指标使用相同的目标图随机种子；每张目标图独立生成 {null_graphs} 张 GNM 零模型图，"
+         "四种指标共享该目标图对应的零图随机种子。"
          if args.null_model == "gnm" else
          f"每种指标使用相同的目标图随机种子；零模型为 {args.null_model}，"
          f"每张目标图各模拟 {null_graphs} 张零模型图，汇总全部节点分数估计 p 值。"),

@@ -1,4 +1,4 @@
-"""Run a paired hub-strength sweep for configuration and Chung-Lu nulls.
+"""Run a paired hub-strength sweep for GNM, configuration, and Chung-Lu nulls.
 
 The default experiment uses 50 target graphs per ratio, 1000 null graphs per
 target graph and model, and all four centrality metrics. Completed target
@@ -25,7 +25,7 @@ from null_models import NULL_MODELS
 from ratio_sweep import DEFAULT_RATIOS, classification_rates, target_graphs
 
 
-MODELS = ("configuration", "chung_lu")
+MODELS = ("gnm", "configuration", "chung_lu")
 METRIC_ORDER = tuple(METRICS)
 BACKEND = "igraph-1.0.0"
 SUMMARY_FIELDS = (
@@ -166,9 +166,10 @@ def summarize_model(
         f"# {model}：中心结构强度实验", "",
         f"每个倍率 {repetitions} 张配对目标图；每张目标图 {null_graphs} 张零模型图；"
         f"每张图汇总全部节点分数；Bonferroni 校正后 p < {alpha}。",
-        "无报告时，图级精确率和 F1 记为 0。配置模型严格保持各节点度数；"
-        "汇总分数得到的是相对随机节点整体的尾部概率。",
-        "由于不同节点的零分布并不相同，这一汇总尾概率不是固定节点条件下的 p 值；"
+        "无报告时，图级精确率和 F1 记为 0。",
+        "GNM 节点可交换；每张目标图独立生成零图并汇总全部节点分数。" if model == "gnm" else
+        "配置模型严格保持各节点度数；Chung–Lu 根据目标图度数设定连边概率。"
+        "汇总分数衡量相对随机节点整体的尾部概率，不是固定节点条件下的 p 值。"
         "此处使用 Bonferroni 阈值作统一比较，不据此声称逐节点误报率控制。", "",
         "| 倍率 | 指标 | 召回率 | 精确率 | F1 | 平均报告数 | 平均误报数 |",
         "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
@@ -217,27 +218,6 @@ def comparison_plot(root: Path, rows: list[dict], ratios: tuple[float, ...]) -> 
     plt.close(fig)
 
 
-def baseline_rows(args: argparse.Namespace) -> list[dict]:
-    pilot_path = args.output / "gnm" / "comparison.csv"
-    defaults_match = (
-        args.n == 100 and args.m == 350 and args.hubs == 3
-        and tuple(args.ratios) == DEFAULT_RATIOS and args.repetitions == 50
-        and args.null_graphs == 1000 and args.alpha == 0.05 and args.seed == 42
-    )
-    path = pilot_path if pilot_path.is_file() else (
-        Path("experiment_results/metric_comparison/comparison.csv") if defaults_match else pilot_path
-    )
-    if not path.is_file():
-        return []
-    with path.open(newline="", encoding="utf-8-sig") as file:
-        rows = list(csv.DictReader(file))
-    expected = {(metric, ratio) for metric in METRIC_ORDER for ratio in args.ratios}
-    actual = {(row["metric"], float(row["ratio"])) for row in rows}
-    if len(rows) != len(expected) or actual != expected:
-        raise ValueError("GNM baseline has unexpected metrics or ratios")
-    return [{"model": "gnm", **row} for row in rows]
-
-
 def main() -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -251,7 +231,7 @@ def main() -> None:
     parser.add_argument("--alpha", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--workers", type=int, default=min(8, os.cpu_count() or 1))
-    parser.add_argument("--output", type=Path, default=Path("experiment_results/null_model_comparison"))
+    parser.add_argument("--output", type=Path, default=Path("experiment_results/null_model_comparison_per_target"))
     args = parser.parse_args()
     matplotlib_dir = Path(tempfile.gettempdir()) / "node_position_pvalue_matplotlib"
     matplotlib_dir.mkdir(parents=True, exist_ok=True)
@@ -269,7 +249,7 @@ def main() -> None:
         "n": args.n, "m": args.m, "hubs": args.hubs, "ratios": ratios,
         "repetitions": args.repetitions, "null_graphs": args.null_graphs,
         "alpha": args.alpha, "seed": args.seed, "models": MODELS, "metrics": METRIC_ORDER,
-        "pooling": "all_nodes", "backend": BACKEND, "version": 2,
+        "pooling": "all_nodes_per_target", "backend": BACKEND, "version": 3,
     }
     args.output.mkdir(parents=True, exist_ok=True)
     settings_path = args.output / "settings.json"
@@ -313,25 +293,22 @@ def main() -> None:
     for model in MODELS:
         summary = summarize_model(args.output, model, targets, args.repetitions, args.null_graphs, args.alpha)
         summaries.extend(summary)
-    baseline = baseline_rows(args)
-    combined = baseline + summaries
+    combined = summaries
     write_csv(args.output / "comparison.csv", combined, SUMMARY_FIELDS)
     lines = [
         "# 零模型与中心性指标比较", "",
         f"固定 N={args.n}、M={args.m}、中心节点数={args.hubs}；每倍率 {args.repetitions} 张目标图；"
-        f"每张目标图使用 {args.null_graphs} 张配置模型或 Chung–Lu 零模型图。",
+        f"每张目标图分别使用 {args.null_graphs} 张对应模型的零模型图；三种模型互不共用零分布。",
         "每张零模型图全部节点的中心性分数参与经验尾概率计算。",
         f"Bonferroni 校正 p < {args.alpha}。各模型使用相同目标图和植入中心节点。",
         "配置模型严格保持各节点度数；其汇总 p 值衡量相对随机节点整体的极端程度，"
         "不能解释为固定该节点度数后的逐节点 p 值。",
-        "Bonferroni 阈值用于统一比较；对这两种汇总零分布，不据此声称严格的逐节点误报率控制。", "",
+        "Bonferroni 阈值用于统一比较；对配置模型和 Chung–Lu 的汇总零分布，不据此声称严格的逐节点误报率控制。", "",
         "| 倍率 | 零模型 | 指标 | 召回率 | 精确率 | F1 | 平均报告数 | 平均误报数 |",
         "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |",
     ]
-    if baseline:
-        lines.insert(6, "GNM 行来自已有的同参数四指标实验。")
     for ratio in ratios:
-        for model in (("gnm",) if baseline else ()) + MODELS:
+        for model in MODELS:
             for metric in METRIC_ORDER:
                 row = next(row for row in combined if row["model"] == model and row["metric"] == metric and float(row["ratio"]) == ratio)
                 lines.append(

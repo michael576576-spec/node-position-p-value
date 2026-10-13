@@ -49,10 +49,10 @@ python ratio_sweep.py
 
 它固定 `N=100`、`M=350`、中心节点数 `k=3`，依次测试倍率
 `1、1.5、2、2.5、3、3.5、4、4.5、5、6`，每个倍率使用 50 个随机种子。
-每张目标图**恰好有 350 条边**；所有目标图共用 1000 张 GNM 图形成的零分布。
+每张目标图**恰好有 350 条边**；每张目标图独立生成 1000 张 GNM 图形成零分布。
 同一随机种子下的不同倍率使用相同的中心节点和随机边顺序，方便比较。
 
-主要结果写入独立的 `experiment_results/ratio_sweep/` 目录：
+主要结果写入独立的 `experiment_results/ratio_sweep_per_target/` 目录：
 
 - `summary.md`：各倍率的召回率、精确率、F1、平均报告数和平均误报数。
 - `ratio_sweep.png`、`ratio_sweep.svg`：召回率、精确率和 F1 随倍率变化的趋势图。
@@ -65,7 +65,7 @@ python ratio_sweep.py
 python ratio_sweep.py --n 100 --m 350 --hubs 3 --ratios 1 2 3 4 5 6
 ```
 
-非度指标默认写入 `experiment_results/ratio_sweep_<metric>/`。绘图使用
+非度指标默认写入 `experiment_results/ratio_sweep_<metric>_per_target/`。绘图使用
 matplotlib；若未安装，数值表格仍会生成。倍率实验的抽样方式和指标定义
 见 [ratio_sweep.md](ratio_sweep.md)。
 
@@ -75,8 +75,8 @@ matplotlib；若未安装，数值表格仍会生成。倍率实验的抽样方�
 python compare_metrics.py
 ```
 
-此命令在相同随机种子的目标图和 GNM 零模型图上，比较度、调和、介数、
-PageRank 四种中心性，仅输出 Bonferroni 校正结果，比较召回率、精确率和 F1。运行后结果见 `experiment_results/metric_comparison/comparison.md`
+此命令在相同随机种子的目标图上，为每张目标图分别生成 GNM 零模型图，比较度、调和、介数、
+PageRank 四种中心性，仅输出 Bonferroni 校正结果，比较召回率、精确率和 F1。运行后结果见 `experiment_results/metric_comparison_per_target/comparison.md`
 与 `comparison.png`；各指标的详细结果位于同目录的指标子目录中。
 可用 `--metrics degree harmonic` 只比较选定的指标。
 
@@ -97,7 +97,7 @@ python compare_metrics.py --null-model chung_lu --metrics harmonic pagerank --re
 python experiment.py --null-model configuration --metric betweenness --repetitions 1 --null-graphs 1000
 ```
 
-`gnm` 固定节点数和边数，继续对同一组 N、M 的目标图共用零分布。
+`gnm` 固定节点数和边数；当前倍率实验对每张目标图分别生成零分布，同一张目标图的四种指标使用相同的零图随机种子。
 `configuration` 从每张目标图出发，随机执行保持简单图的双边交换；
 每张零模型图都严格保持**每个对应节点**的度数。交换次数为每张图 `10 × M`
 次尝试；这是配置模型的边交换近似抽样，不保证在具有该度序列的全部简单图上精确均匀。
@@ -107,18 +107,18 @@ python experiment.py --null-model configuration --metric betweenness --repetitio
 `min(d_u d_v / sum(d), 1)` 作为边概率；生成图为简单图，边数和度数可以变化，
 输入度数在简单图中仅是近似期望值。
 
-后两种模型分别对每张目标图建零分布，每张零模型图的**所有节点分数**都参与汇总。
+三种模型都分别对每张目标图建零分布，每张零模型图的**所有节点分数**都参与汇总。
 100 个节点、1000 张零模型图得到 10 万个参考分数；经验 p 值使用
 `(不低于观测分数的参考分数数目 + 1) / (参考分数总数 + 1)`。
 这些分数来自 1000 张图，同一张图内的节点并不独立。
 配置模型和 Chung–Lu 的汇总 p 值衡量的是相对随机节点整体的极端程度，
 不能直接解释为固定某个节点度数后的逐节点显著性。
-这两种模型须为每张目标图单独生成零分布，运行时间可能明显增加。
+逐张目标图生成零分布会增加运行时间。
 非 GNM 结果默认写入带模型名的新目录，避免覆盖已有结果。
 
 `ratio_sweep_fast.py` 的精确超几何方法仅针对 GNM 的度分布，运行方式保持原样。
 
-完整的配置模型与 Chung–Lu 四指标强度实验使用：
+完整的 GNM、配置模型与 Chung–Lu 四指标强度实验使用：
 
 ```powershell
 python compare_null_models.py
@@ -127,17 +127,17 @@ python compare_null_models.py
 先查看小规模趋势可运行：
 
 ```powershell
-python compare_metrics.py --repetitions 10 --null-graphs 100 --output experiment_results/null_model_comparison_pilot_10x100/gnm
-python compare_null_models.py --repetitions 10 --null-graphs 100 --workers 8 --output experiment_results/null_model_comparison_pilot_10x100
+python compare_null_models.py --repetitions 10 --null-graphs 100 --workers 8 --output experiment_results/null_model_comparison_per_target_pilot_10x100
 ```
 
-这两条命令在相同的 10 个目标图随机种子下，分别生成 GNM 参照结果以及配置模型、Chung–Lu 模型结果。合并表格和图位于 `experiment_results/null_model_comparison_pilot_10x100/comparison.md` 与 `comparison.png`。更改实验参数时应使用新的输出目录，避免混用检查点。
+这条命令对每张目标图分别生成 GNM、配置模型、Chung–Lu 零分布，四种指标共享对应模型的零图。合并表格和图位于 `experiment_results/null_model_comparison_per_target_pilot_10x100/comparison.md` 与 `comparison.png`。更改实验参数时应使用新的输出目录，避免混用检查点。
+旧的 `null_model_comparison_pilot_10x100/` 和 `metric_comparison/` 结果保留作历史记录，其中 GNM 曾由所有目标图共用一套零分布；它们不参与新表格汇总。
 
 默认采用 N=100、M=350、3 个植入节点、10 个倍率、每倍率 50 张目标图、
 每张目标图 1000 张零模型图，以及 DC、HC、BC、PR 四种指标。
-结果保存在 `experiment_results/null_model_comparison/`，包括两个模型各自的
+结果保存在 `experiment_results/null_model_comparison_per_target/`，包括三个模型各自的
 `comparison.md`、`comparison.csv`、`comparison.png`、`comparison.svg`、
-`replicates.csv` 和 `node_results.csv`，以及包含已有 GNM 基线的总比较表和图。
+`replicates.csv` 和 `node_results.csv`，以及三个模型的总比较表和图。
 每张目标图完成后会写入 `checkpoints/`；同参数重运行可从已有进度继续。
 实验入口使用 igraph 的原生实现计算四种中心性，并用同一实现计算目标图和零模型图。
 先安装 `python -m pip install igraph`；可用 `--workers` 调整并行进程数。
