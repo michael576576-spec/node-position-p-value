@@ -20,7 +20,9 @@ from itertools import accumulate
 from pathlib import Path
 
 from centrality import METRICS
-from network_core import Network, build_null_scores, possible_edges, score_network
+from network_core import (
+    NULL_MODEL_CHOICES, Network, build_null_distribution, possible_edges, score_network,
+)
 
 
 DEFAULT_RATIOS = (1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 6.0)
@@ -172,6 +174,7 @@ def run_sweep(
     quiet: bool = False,
     detail_output: bool = True,
     save_edges: bool = True,
+    null_model: str = "gnm",
 ) -> list[dict[str, float]]:
     if repetitions < 1:
         raise ValueError("repetitions must be positive")
@@ -179,12 +182,21 @@ def run_sweep(
         raise ValueError("alpha must be between 0 and 1")
     if len(set(ratios)) != len(ratios):
         raise ValueError("ratios must be distinct")
+    if null_model not in NULL_MODEL_CHOICES:
+        raise ValueError(f"unknown null model '{null_model}'")
 
     distributions = {ratio: hub_edge_distribution(n, m, k, ratio) for ratio in ratios}
     output.mkdir(parents=True, exist_ok=True)
-    null_scores = build_null_scores(
-        n, m, null_graphs, random.Random(f"{seed}:null:{n}:{m}"), metric
-    )
+    shared_null = None
+    if null_model == "gnm":
+        # The GNM generator uses only n and m; give it a graph with m edges.
+        reference_network = Network(
+            "null_reference", n, possible_edges(n)[:m], frozenset(), m, 0, None, None
+        )
+        shared_null = build_null_distribution(
+            reference_network, null_graphs, random.Random(f"{seed}:null:{n}:{m}"), metric,
+            null_model,
+        )
 
     replicate_rows: list[dict[str, object]] = []
     node_rows: list[dict[str, object]] = []
@@ -208,6 +220,11 @@ def run_sweep(
             graph_name = f"ratio_{ratio:g}_rep{repetition:02d}"
             network = Network(
                 graph_name, n, edges, hubs, m, k, model.hub_probability, model.ordinary_probability
+            )
+            null_scores = shared_null or build_null_distribution(
+                network, null_graphs,
+                random.Random(f"{seed}:null:{n}:{m}:{repetition}:{ratio:g}:{null_model}"),
+                metric, null_model,
             )
             results = score_network(network, null_scores, alpha, metric, bonferroni_only=True)
             bonf_reported = sum(bool(row["predicted_hub_bonferroni"]) for row in results)
@@ -281,7 +298,9 @@ def run_sweep(
         f"# 固定 N、M、中心节点数的连边概率倍率实验",
         "",
         f"固定 N={n}、M={m}、中心节点数={k}；每个倍率生成 {repetitions} 张图。"
-        f"所有目标图共用 {null_graphs} 张 GNM({n},{m}) 图构成的经验零分布。",
+        + (f"所有目标图共用 {null_graphs} 张 GNM({n},{m}) 图构成的经验零分布。"
+           if null_model == "gnm" else
+           f"零模型：{null_model}；每张目标图生成 {null_graphs} 张零模型图，并汇总全部节点分数估计 p 值。"),
         f"中心性指标：{metric}。",
         f"只报告 Bonferroni 校正结果：校正 p 值 < {alpha}（等价于未校正 p 值 < {alpha}/{n}）。",
         "每张目标图恰好有 M 条边。倍率指中心相关边与普通边的边际连边概率之比；倍率 1 对应 GNM。",
@@ -319,14 +338,21 @@ def main() -> None:
     parser.add_argument("--hubs", type=int, default=3)
     parser.add_argument("--ratios", type=float, nargs="+", default=DEFAULT_RATIOS)
     parser.add_argument("--repetitions", type=int, default=50)
-    parser.add_argument("--null-graphs", type=int, default=1000)
+    parser.add_argument("--null-graphs", type=int)
     parser.add_argument("--alpha", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--metric", choices=METRICS, default="degree")
+    parser.add_argument("--null-model", choices=NULL_MODEL_CHOICES, default="gnm")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    if not 0 < args.alpha < 1:
+        parser.error("--alpha must be between 0 and 1")
+    if args.null_graphs is not None and args.null_graphs < 1:
+        parser.error("--null-graphs must be positive")
+    null_graphs = args.null_graphs if args.null_graphs is not None else 1000
     output = args.output or Path("experiment_results") / (
-        "ratio_sweep" if args.metric == "degree" else f"ratio_sweep_{args.metric}"
+        ("ratio_sweep" if args.metric == "degree" else f"ratio_sweep_{args.metric}")
+        if args.null_model == "gnm" else f"ratio_sweep_{args.metric}_{args.null_model}"
     )
     run_sweep(
         args.n,
@@ -334,11 +360,12 @@ def main() -> None:
         args.hubs,
         tuple(args.ratios),
         args.repetitions,
-        args.null_graphs,
+        null_graphs,
         args.alpha,
         args.seed,
         output,
         args.metric,
+        null_model=args.null_model,
     )
 
 

@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 from centrality import METRICS
+from network_core import NULL_MODEL_CHOICES
 from ratio_sweep import DEFAULT_RATIOS, run_sweep
 
 
@@ -67,11 +68,21 @@ def main() -> None:
     parser.add_argument("--hubs", type=int, default=3)
     parser.add_argument("--ratios", type=float, nargs="+", default=DEFAULT_RATIOS)
     parser.add_argument("--repetitions", type=int, default=50)
-    parser.add_argument("--null-graphs", type=int, default=1000)
+    parser.add_argument("--null-graphs", type=int)
     parser.add_argument("--alpha", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--output", type=Path, default=Path("experiment_results/metric_comparison"))
+    parser.add_argument("--null-model", choices=NULL_MODEL_CHOICES, default="gnm")
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    if not 0 < args.alpha < 1:
+        parser.error("--alpha must be between 0 and 1")
+    if args.null_graphs is not None and args.null_graphs < 1:
+        parser.error("--null-graphs must be positive")
+    null_graphs = args.null_graphs if args.null_graphs is not None else 1000
+    args.output = args.output or Path("experiment_results") / (
+        "metric_comparison" if args.null_model == "gnm"
+        else f"metric_comparison_{args.null_model}"
+    )
     metrics = tuple(dict.fromkeys(args.metrics))
     ratios = tuple(args.ratios)
     args.output.mkdir(parents=True, exist_ok=True)
@@ -85,7 +96,7 @@ def main() -> None:
             args.hubs,
             ratios,
             args.repetitions,
-            args.null_graphs,
+            null_graphs,
             args.alpha,
             args.seed,
             args.output / metric,
@@ -93,6 +104,7 @@ def main() -> None:
             quiet=True,
             detail_output=False,
             save_edges=metric == "degree",
+            null_model=args.null_model,
         )
         combined.extend({"metric": metric, **row} for row in summary)
 
@@ -105,13 +117,16 @@ def main() -> None:
         "# 中心性指标比较",
         "",
         f"固定 N={args.n}、M={args.m}、植入中心节点数={args.hubs}；每个倍率重复 {args.repetitions} 次。",
-        f"每种指标使用相同的目标图随机种子和 {args.null_graphs} 张 GNM 零模型图。",
+        (f"每种指标使用相同的目标图随机种子和 {null_graphs} 张 GNM 零模型图。"
+         if args.null_model == "gnm" else
+         f"每种指标使用相同的目标图随机种子；零模型为 {args.null_model}，"
+         f"每张目标图各模拟 {null_graphs} 张零模型图，汇总全部节点分数估计 p 值。"),
         f"以下均使用 Bonferroni 校正 p 值 < {args.alpha}（等价于未校正 p 值 < {args.alpha}/{args.n}）。",
         "",
     ]
     lines.extend(
         [
-            "召回率、精确率和 F1 先逐图计算，再对每个倍率的 50 张图取平均（图级 macro 汇总）。",
+            f"召回率、精确率和 F1 先逐图计算，再对每个倍率的 {args.repetitions} 张图取平均（图级 macro 汇总）。",
             "若某张图没有报告节点，其精确率和 F1 记为 0。",
             "平均报告数和平均误报数均按每张图计算。",
             "",

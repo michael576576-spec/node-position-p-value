@@ -1,6 +1,7 @@
 # 中心节点连边倍率实验
 
-运行 `python ratio_sweep.py`。默认固定节点数 `N=100`、边数 `M=350`、
+运行 `python ratio_sweep.py`。可用 `--metric degree|harmonic|betweenness|pagerank`
+选择中心性指标，默认是 `degree`。默认固定节点数 `N=100`、边数 `M=350`、
 中心节点数 `k=3`，考察倍率 `1、1.5、2、2.5、3、3.5、4、4.5、5、6`。
 每个倍率生成 50 张图，随机种子默认是 42。命令行参数 `--n`、`--m`、
 `--hubs`、`--ratios`、`--repetitions`、`--null-graphs`、`--alpha`、
@@ -23,19 +24,20 @@ p_hub      = r p_ordinary
 
 同一重复编号在各倍率下使用同一组中心节点及相同的随机边顺序，形成配对
 比较。零分布由 1000 张 GNM(N,M) 图构成，在所有倍率和重复之间共用。
-节点的原始 p 值与 [experiment.py](experiment.py) 一致；Bonferroni 判定
-使用 `p < 0.05/N`。
+零分布和目标图均使用所选中心性指标。只输出 Bonferroni 校正 p 值，
+判定条件为校正 p 值 `< 0.05`（等价于未校正 p 值 `< 0.05/N`）。
 
 ## 输出
 
-默认输出位于 `experiment_results/ratio_sweep/`：
+度中心性的默认输出位于 `experiment_results/ratio_sweep/`；其他指标默认
+输出到 `experiment_results/ratio_sweep_<metric>/`：
 
-- `summary.md`、`summary.csv`：各倍率的检出率、平均报告数、平均误报数和
-  完全恢复率，分别列出原始与 Bonferroni 判定结果。
-- `ratio_sweep.png`、`ratio_sweep.svg`：检出率、平均误报数和完全恢复率
+- `summary.md`、`summary.csv`：各倍率的召回率、精确率、F1、平均报告数和
+  平均误报数，仅列出 Bonferroni 判定结果。
+- `ratio_sweep.png`、`ratio_sweep.svg`：召回率、精确率和 F1
   的趋势图。绘图需要 matplotlib；若未安装，表格仍会生成。
 - `replicates.csv`：500 张图各自的统计结果。
 - `node_results.csv`、`network_edges.csv`：逐节点判定和每张图的边列表。
 
-检出率是所有植入节点中成功检出的比例。完全恢复率是既找全植入节点、
-又没有误报的图所占比例。
+每张图分别计算召回率、精确率和 F1，再对同倍率的 50 张图取平均。
+单图没有报告节点时，精确率和 F1 记为 0。

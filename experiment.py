@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 from centrality import METRICS
-from network_core import Network, detect_hubs, gnm_edges, possible_edges
+from network_core import NULL_MODEL_CHOICES, Network, detect_hubs, gnm_edges, possible_edges
 
 
 def make_negative(name: str, n: int, m: int, rng: random.Random) -> Network:
@@ -31,7 +31,7 @@ def make_positive(
     """Draw edges independently, with a larger probability for hub-incident edges.
 
     ``target_m`` is the expected edge count. The realized edge count may differ;
-    inference always fits its G(n,m) null using the realized count.
+    inference fits the selected null using the realized graph.
     """
     candidates = possible_edges(n)
     if not 1 <= hub_count < n:
@@ -118,6 +118,7 @@ def run_experiment(
     output: Path,
     repetitions: int = 50,
     metric: str = "degree",
+    null_model: str = "gnm",
 ) -> None:
     if repetitions < 1:
         raise ValueError("repetitions must be positive")
@@ -149,7 +150,9 @@ def run_experiment(
                     if kind == "negative"
                     else make_positive(replicate_name, n, target_m, hub_count, ratio, graph_rng)
                 )
-                results = detect_hubs(network, null_graphs, alpha, random.Random(null_seed), metric)
+                results = detect_hubs(
+                    network, null_graphs, alpha, random.Random(null_seed), metric, null_model
+                )
                 reported = sum(bool(row["predicted_hub"]) for row in results)
                 true_positives = sum(
                     bool(row["predicted_hub"] and row["true_hub"]) for row in results
@@ -247,7 +250,12 @@ def run_experiment(
     )
     markdown_table = "\n".join(markdown_lines) + (
         f"\n\n中心性指标：{metric}。每组参数独立模拟 {repetitions} 张图。“平均边数”和“报告的中心节点数”"
-        "均为这些图的平均值；每张图的零分布按其实际边数构造。\n"
+        "均为这些图的平均值；GNM 按每张图的实际边数构造零分布，其他零模型按实际图拟合。\n"
+    )
+    markdown_table += (
+        f"\n零模型：{null_model}；每张目标图使用 {null_graphs} 张零模型图。"
+        + ("每张零模型图的全部节点分数参与 p 值估计。" if null_model != "gnm" else "")
+        + "\n"
     )
     (output / "network_summary.md").write_text(markdown_table, encoding="utf-8")
     comparison_lines = [
@@ -275,6 +283,7 @@ def run_experiment(
         f"误报节点总数由 {sum(int(row['false_positives']) for row in positive_rows)} "
         f"降为 {sum(int(row['bonferroni_false_positives']) for row in positive_rows)}。\n"
     )
+    comparison_notes += f"\n零模型：{null_model}；每张目标图模拟 {null_graphs} 张零模型图。\n"
     (output / "bonferroni_comparison.md").write_text(
         "\n".join(comparison_lines) + comparison_notes, encoding="utf-8"
     )
@@ -288,17 +297,27 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seed", type=int, default=42, help="random seed (default: 42)")
     parser.add_argument("--metric", choices=METRICS, default="degree")
-    parser.add_argument("--null-graphs", type=int, default=100, help="GNM null graphs per network")
+    parser.add_argument("--null-model", choices=NULL_MODEL_CHOICES, default="gnm")
+    parser.add_argument("--null-graphs", type=int, help="null graphs per network")
     parser.add_argument("--repetitions", type=int, default=50, help="graphs per setting")
     parser.add_argument("--alpha", type=float, default=0.05, help="p-value threshold")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    if not 0 < args.alpha < 1:
+        parser.error("--alpha must be between 0 and 1")
+    if args.null_graphs is not None and args.null_graphs < 1:
+        parser.error("--null-graphs must be positive")
+    null_graphs = args.null_graphs if args.null_graphs is not None else 100
     output = args.output or (
-        Path("experiment_results/basic_experiment")
-        if args.metric == "degree"
-        else Path("experiment_results") / f"{args.metric}_experiment"
+        (Path("experiment_results/basic_experiment")
+         if args.metric == "degree" else Path("experiment_results") / f"{args.metric}_experiment")
+        if args.null_model == "gnm" else
+        Path("experiment_results") / f"{args.metric}_{args.null_model}_experiment"
     )
-    run_experiment(args.seed, args.null_graphs, args.alpha, output, args.repetitions, args.metric)
+    run_experiment(
+        args.seed, null_graphs, args.alpha, output, args.repetitions, args.metric,
+        args.null_model,
+    )
 
 
 if __name__ == "__main__":
