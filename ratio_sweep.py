@@ -107,6 +107,31 @@ def hub_edge_distribution(n: int, m: int, k: int, ratio: float) -> HubEdgeDistri
     return HubEdgeDistribution(counts, tuple(cumulative), ordinary_probability, hub_probability)
 
 
+def target_graphs(
+    n: int, m: int, k: int, ratios: tuple[float, ...], repetitions: int, seed: int
+):
+    """Reproduce the paired target graphs used by run_sweep."""
+    distributions = {ratio: hub_edge_distribution(n, m, k, ratio) for ratio in ratios}
+    candidates = possible_edges(n)
+    for repetition in range(1, repetitions + 1):
+        hubs = frozenset(random.Random(f"{seed}:{repetition}:hubs").sample(range(n), k))
+        hub_candidates = []
+        ordinary_candidates = []
+        for u, v in candidates:
+            (hub_candidates if u in hubs or v in hubs else ordinary_candidates).append((u, v))
+        random.Random(f"{seed}:{repetition}:hub_edges").shuffle(hub_candidates)
+        random.Random(f"{seed}:{repetition}:ordinary_edges").shuffle(ordinary_candidates)
+        quantile = random.Random(f"{seed}:{repetition}:hub_edge_count").random()
+        for ratio in ratios:
+            model = distributions[ratio]
+            hub_edge_count = model.sample(quantile)
+            edges = tuple(hub_candidates[:hub_edge_count] + ordinary_candidates[:m - hub_edge_count])
+            name = f"ratio_{ratio:g}_rep{repetition:02d}"
+            yield ratio, repetition, Network(
+                name, n, edges, hubs, m, k, model.hub_probability, model.ordinary_probability
+            )
+
+
 def write_csv(path: Path, rows: list[dict[str, object]], columns: list[str]) -> None:
     with path.open("w", newline="", encoding="utf-8-sig") as file:
         writer = csv.DictWriter(file, fieldnames=columns)

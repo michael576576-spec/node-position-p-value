@@ -22,8 +22,7 @@ from centrality import METRICS, compute_multiple_scores_igraph, compute_scores
 from compare_metrics import METRIC_LABELS, write_comparison_plot
 from network_core import Network, NullDistribution, score_network
 from null_models import NULL_MODELS
-from ratio_sweep import DEFAULT_RATIOS, classification_rates
-from ratio_sweep_fast import target_graphs
+from ratio_sweep import DEFAULT_RATIOS, classification_rates, target_graphs
 
 
 MODELS = ("configuration", "chung_lu")
