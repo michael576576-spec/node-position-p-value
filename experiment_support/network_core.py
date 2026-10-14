@@ -6,8 +6,8 @@ import random
 from bisect import bisect_left
 from dataclasses import dataclass
 
-from centrality import compute_scores
-from null_models import NULL_MODELS, gnm_edges, possible_edges
+from experiment_support.centrality import compute_scores
+from experiment_support.null_models import NULL_MODELS, gnm_edges, possible_edges
 
 NULL_MODEL_CHOICES = tuple(NULL_MODELS)
 

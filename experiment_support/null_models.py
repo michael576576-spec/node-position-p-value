@@ -6,7 +6,7 @@ import random
 from collections.abc import Callable
 from functools import lru_cache
 
-from centrality import Edge
+from experiment_support.centrality import Edge
 
 
 @lru_cache(maxsize=None)

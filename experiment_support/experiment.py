@@ -1,6 +1,6 @@
 """Empirical centrality p-values for simulated network hubs.
 
-Run ``python experiment.py`` to evaluate 10 negative and 10 positive parameter
+Run ``python -m experiment_support.experiment`` to evaluate 10 negative and 10 positive parameter
 sets, with 50 independently seeded graphs per setting.
 """
 
@@ -12,8 +12,8 @@ import random
 import sys
 from pathlib import Path
 
-from centrality import METRICS
-from network_core import NULL_MODEL_CHOICES, Network, detect_hubs, gnm_edges, possible_edges
+from experiment_support.centrality import METRICS
+from experiment_support.network_core import NULL_MODEL_CHOICES, Network, detect_hubs, gnm_edges, possible_edges
 
 
 def make_negative(name: str, n: int, m: int, rng: random.Random) -> Network:

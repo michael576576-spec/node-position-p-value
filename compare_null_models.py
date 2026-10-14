@@ -18,11 +18,13 @@ import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
-from centrality import METRICS, compute_multiple_scores_igraph, compute_scores
-from compare_metrics import METRIC_LABELS, write_comparison_plot
-from network_core import Network, NullDistribution, score_network
-from null_models import NULL_MODELS
-from ratio_sweep import DEFAULT_RATIOS, classification_rates, target_graphs
+import numpy as np
+
+from experiment_support.centrality import METRICS, compute_multiple_scores_igraph
+from experiment_support.compare_metrics import METRIC_LABELS, write_comparison_plot
+from experiment_support.network_core import Network
+from experiment_support.null_models import NULL_MODELS
+from experiment_support.ratio_sweep import DEFAULT_RATIOS, classification_rates, target_graphs
 
 
 MODELS = ("gnm", "configuration", "chung_lu")
@@ -56,9 +58,10 @@ def run_target(
         f"{seed}:null:{network.n}:{network.m}:{repetition}:{ratio:g}:{model}"
     )
     pooled: dict[str, list[float]] = {metric: [] for metric in metrics}
+    observed = compute_multiple_scores_igraph(network.n, network.edges, metrics)
     if model == "configuration":
-        # Every switch preserves the multiset of degrees exactly.
-        pooled["degree"] = compute_scores(network.n, network.edges, "degree") * null_graphs
+        # Every switch preserves the labelled degree sequence exactly.
+        pooled["degree"] = observed["degree"] * null_graphs
         sampled_metrics = tuple(metric for metric in metrics if metric != "degree")
     else:
         sampled_metrics = metrics
@@ -69,17 +72,31 @@ def run_target(
         for metric in sampled_metrics:
             pooled[metric].extend(scores[metric])
 
-    observed = compute_multiple_scores_igraph(network.n, network.edges, metrics)
     results: dict[str, dict] = {}
     for metric in metrics:
         values = pooled[metric]
         if len(values) != network.n * null_graphs:
             raise ArithmeticError(f"wrong null score count for {model}/{metric}")
-        values.sort()
-        node_rows = score_network(
-            network, NullDistribution(model, values), alpha, metric,
-            bonferroni_only=True, observed_scores=observed[metric],
+        reference = np.sort(np.asarray(values))
+        scores = np.asarray(observed[metric])
+        upper_tail_counts = len(reference) - np.searchsorted(reference, scores, side="left")
+        adjusted_p = np.minimum(
+            1.0, network.n * (upper_tail_counts + 1) / (len(reference) + 1)
         )
+        order = sorted(range(network.n), key=lambda node: (-scores[node], node))
+        node_rows = [
+            {
+                "position": position,
+                "node": node,
+                "degree": int(observed["degree"][node]),
+                "metric": metric,
+                "centrality_score": float(scores[node]),
+                "bonferroni_p_value": float(adjusted_p[node]),
+                "predicted_hub_bonferroni": bool(adjusted_p[node] < alpha),
+                "true_hub": node in network.hubs,
+            }
+            for position, node in enumerate(order, start=1)
+        ]
         reported = [row for row in node_rows if row["predicted_hub_bonferroni"]]
         tp = sum(bool(row["true_hub"]) for row in reported)
         fp = len(reported) - tp

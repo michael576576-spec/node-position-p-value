@@ -9,9 +9,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-from centrality import METRICS
-from network_core import NULL_MODEL_CHOICES
-from ratio_sweep import DEFAULT_RATIOS, run_sweep
+from experiment_support.centrality import METRICS
+from experiment_support.network_core import NULL_MODEL_CHOICES
+from experiment_support.ratio_sweep import DEFAULT_RATIOS, run_sweep
 
 
 METRIC_LABELS = {

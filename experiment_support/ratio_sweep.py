@@ -1,7 +1,7 @@
 """Measure how planted-hub detection changes with the hub edge-probability ratio.
 
 The target graphs have exactly N vertices, M edges, and K designated hubs.
-Run ``python ratio_sweep.py`` for the default 10 ratios and 50 paired graph
+Run ``python -m experiment_support.ratio_sweep`` for the default 10 ratios and 50 paired graph
 replicates per ratio.
 """
 
@@ -19,8 +19,8 @@ from dataclasses import dataclass
 from itertools import accumulate
 from pathlib import Path
 
-from centrality import METRICS
-from network_core import (
+from experiment_support.centrality import METRICS
+from experiment_support.network_core import (
     NULL_MODEL_CHOICES, Network, build_null_distribution, possible_edges, score_network,
 )
 
