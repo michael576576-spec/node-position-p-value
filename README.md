@@ -149,29 +149,32 @@ python compare_null_models.py --repetitions 10 --null-graphs 100 --workers 8 --o
 实验入口使用 igraph 的原生实现计算四种中心性，并用同一实现计算目标图和零模型图。
 先安装 `python -m pip install igraph`；可用 `--workers` 调整并行进程数。
 
-## 精简正负例：零模型与零图数量对比
+## 基础正负例：20 张负例与 20 张正例
 
 ```powershell
-python compare_basic_model_budgets.py --negative-settings 1 5 10 --positive-settings 1 3 5 7 10 --repetitions 50 --budgets 100 500 1000 --workers 8 --output experiment_results/basic_reduced_model_budget_comparison
+python compare_basic_model_budgets.py --budgets 100 500 1000 --workers 8 --output experiment_results/basic_40_unique_graphs_aggregate
 ```
 
-从 `experiment.py` 的参数表选取 3 组 GNM 负例和 5 组植入中心节点的正例，
-每组模拟 50 张目标图。同一张目标图使用 GNM、configuration、Chung–Lu
-三种零模型；DC、HC、BC、PR 共享各模型的零图。每个“目标图 × 零模型”
-只生成 1000 张零图，前 100 张和前 500 张同时给出较小预算的结果。
-每张零图的全部节点分数参与对应指标的经验零分布。
+使用 20 组不同的 GNM 负例参数和 20 组不同的植入中心节点正例参数，
+每组只生成一张图，总计 20 张负例图、20 张正例图。
+参数列在入口文件的 `NEGATIVE_SPECS`、`POSITIVE_SPECS` 及结果目录的 `settings.json` 中。
+同一张目标图使用 GNM、configuration、Chung–Lu 三种零模型；
+DC、HC、BC、PR 共享各模型的零图。每个“目标图 × 零模型”生成一条 1000 张零图的
+序列，前 100 张和前 500 张同时用于较小预算的结果。每张零图的全部节点分数
+参与对应指标的经验零分布。
 
-此实验只计算 Bonferroni 校正 p 值，不生成原始 p 值。负例总体汇总平均误报数、
-无报告图占比；正例逐参数组汇总平均报告数、检出数、误报数、Recall、Precision、F1，
-不计算跨组平均分类分数。`comparison.md` 含负例总体表和正例逐组表；
-`setting_summary.csv`、`overall_summary.csv`、
-`replicates.csv`、`significant_nodes.csv` 和 `budget_comparison.csv` 分别提供
-分参数组、负例总体、逐图、显著节点和预算间报告集合差异。
-完成一个目标图/模型后写入检查点，同参数重运行可以续跑；改变参数时请指定
-新的 `--output`。完整配置需要计算 400 张目标图和最多 120 万张零图，
-四种中心性中介数计算可能使运行时间较长。
-
-旧的 10 组负例加 10 组正例结果仍保存在 `experiment_results/basic_model_budget_comparison/`。
+实验只计算 Bonferroni 校正 p 值。`summary.md` 和 `summary.csv` 是同一张汇总表，
+按零模型、指标、零图数各列一行，报告负例误检率及正例 Recall、Precision、F1。
+负例误检率先按每张图计算报告节点数除以节点数，再对 20 张负例图取平均；
+正例三项指标先逐图计算，
+再对 20 张正例图取平均。无报告时 Precision 和 F1 记为 0。
+`summary.md` 下方另列 40 张图的节点预测合并后计算的整体 Recall、Precision、F1；
+负例中的报告节点会计入整体 FP。文档末尾再单列零图数为 1000 的整体结果。
+其后列出同预算下负例平均误检率和正例逐图平均 Recall、Precision、F1，方便与整体结果对照。
+文档最后将零图数为 1000 时的上述指标合并为一张表。
+每个目标图/零模型完成后写入检查点；同参数重运行可以续跑。
+旧结果仍保存在 `experiment_results/basic_model_budget_comparison/` 和
+`experiment_results/basic_reduced_model_budget_comparison/`。
 
 ## 中心结构：强度扫描与中心节点数量扫描
 

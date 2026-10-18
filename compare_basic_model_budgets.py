@@ -1,6 +1,6 @@
-"""Compare null models and budgets on selected positive/negative settings.
+"""Compare null models, budgets and centralities on 20 negative and 20 positive graphs.
 
-The target graphs and their seeds come from experiment.py. Each target/model
+Every target graph has its own parameter setting. Each target/model
 uses one null-graph stream; smaller budgets are prefixes of the largest one.
 Only Bonferroni-adjusted p-values and decisions are produced.
 """
@@ -15,7 +15,6 @@ import random
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from itertools import combinations
 from pathlib import Path
 
 import numpy as np
@@ -29,25 +28,31 @@ from experiment_support.ratio_sweep import classification_rates
 MODELS = ("gnm", "configuration", "chung_lu")
 METRIC_ORDER = tuple(METRICS)
 METRIC_LABELS = {"degree": "DC", "harmonic": "HC", "betweenness": "BC", "pagerank": "PR"}
-DEFAULT_NEGATIVE_SETTINGS = (1, 5, 10)
-DEFAULT_POSITIVE_SETTINGS = (1, 3, 5, 7, 10)
+
+NEGATIVE_SPECS = (
+    (52, 78), (56, 95), (58, 105), (62, 115), (64, 130),
+    (68, 145), (72, 160), (74, 175), (78, 200), (82, 225),
+    (86, 245), (88, 265), (92, 290), (96, 315), (98, 340),
+    (102, 365), (106, 400), (112, 470), (120, 540), (135, 700),
+)
+POSITIVE_SPECS = SPECS + (
+    (55, 75, 1, 2.0), (60, 105, 2, 4.5),
+    (70, 125, 1, 5.0), (75, 210, 3, 3.0),
+    (85, 250, 5, 4.5), (95, 320, 3, 3.5),
+    (105, 390, 4, 5.0), (115, 500, 2, 6.0),
+    (130, 680, 6, 4.0), (145, 820, 4, 6.5),
+)
 
 
-def target_graphs(seed: int, repetitions: int,
-                  negative_settings: tuple[int, ...], positive_settings: tuple[int, ...]):
-    for kind in ("negative", "positive"):
-        for index, (n, target_m, hub_count, ratio) in enumerate(SPECS, start=1):
-            if index not in (negative_settings if kind == "negative" else positive_settings):
-                continue
-            setting = f"{kind}_{index:02d}"
-            for repetition in range(1, repetitions + 1):
-                name = f"{setting}_rep{repetition:02d}"
-                rng = random.Random(f"{seed}:{setting}:{repetition}:graph")
-                network = (
-                    make_negative(name, n, target_m, rng) if kind == "negative"
-                    else make_positive(name, n, target_m, hub_count, ratio, rng)
-                )
-                yield kind, setting, repetition, network
+def target_graphs(seed: int):
+    for index, (n, target_m) in enumerate(NEGATIVE_SPECS, start=1):
+        name = f"negative_{index:02d}"
+        rng = random.Random(f"{seed}:{name}:graph")
+        yield "negative", name, make_negative(name, n, target_m, rng)
+    for index, (n, target_m, hub_count, ratio) in enumerate(POSITIVE_SPECS, start=1):
+        name = f"positive_{index:02d}"
+        rng = random.Random(f"{seed}:{name}:graph")
+        yield "positive", name, make_positive(name, n, target_m, hub_count, ratio, rng)
 
 
 def checkpoint_path(output: Path, model: str, graph: str) -> Path:
@@ -59,7 +64,7 @@ def degree_sequence(n: int, edges: tuple[tuple[int, int], ...]) -> np.ndarray:
     return np.bincount(endpoints, minlength=n)
 
 
-def run_target(kind: str, setting: str, repetition: int, network,
+def run_target(kind: str, setting: str, network,
                model: str, metrics: tuple[str, ...], budgets: tuple[int, ...],
                alpha: float, seed: int, checkpoint: Path) -> str:
     n = network.n
@@ -109,7 +114,7 @@ def run_target(kind: str, setting: str, repetition: int, network,
             }
 
     payload = {
-        "kind": kind, "setting": setting, "repetition": repetition,
+        "kind": kind, "setting": setting,
         "graph": network.name, "model": model,
         "n": n, "m": network.m, "hubs": sorted(network.hubs),
         "hub_probability": network.hub_probability,
@@ -131,193 +136,174 @@ def write_csv(path: Path, rows: list[dict], columns: list[str]) -> None:
         writer.writerows(rows)
 
 
-def mean(rows: list[dict], key: str) -> float:
-    return sum(float(row[key]) for row in rows) / len(rows)
-
-
 def summarize(output: Path, targets: list, models: tuple[str, ...],
               metrics: tuple[str, ...], budgets: tuple[int, ...], alpha: float) -> None:
-    replicate_rows: list[dict] = []
-    node_rows: list[dict] = []
-    budget_rows: list[dict] = []
-    setting_details: dict[str, dict] = {}
-
-    for kind, setting, repetition, network in targets:
-        setting_details[setting] = {
-            "kind": kind, "setting": setting, "n": network.n,
-            "target_m": network.target_m, "hubs": len(network.hubs),
-            "hub_probability": network.hub_probability,
-            "ordinary_probability": network.background_probability,
+    """Average each graph's false-report fraction and classification rates."""
+    negative_count = sum(kind == "negative" for kind, _, _ in targets)
+    positive_count = sum(kind == "positive" for kind, _, _ in targets)
+    if negative_count != 20 or positive_count != 20:
+        raise ValueError("expected exactly 20 negative and 20 positive target graphs")
+    aggregates = {
+        (model, metric, budget): {
+            "negative_report_rate_sum": 0.0, "recall_sum": 0.0,
+            "precision_sum": 0.0, "f1_sum": 0.0,
+            "total_tp": 0, "total_fp": 0, "total_fn": 0,
         }
+        for model in models for metric in metrics for budget in budgets
+    }
+    for kind, setting, network in targets:
+        hubs = set(network.hubs)
         for model in models:
             checkpoint = checkpoint_path(output, model, network.name)
             data = json.loads(checkpoint.read_text(encoding="utf-8"))
             if (data["kind"] != kind or data["setting"] != setting
-                    or data["repetition"] != repetition
                     or data["graph"] != network.name or data["model"] != model
                     or data["n"] != network.n or data["m"] != network.m
-                    or data["hubs"] != sorted(network.hubs)
+                    or data["hubs"] != sorted(hubs)
                     or tuple(data["metrics"]) != metrics
                     or tuple(data["budgets"]) != budgets):
                 raise ValueError(f"checkpoint mismatch: {checkpoint}")
-            hubs = set(network.hubs)
             for metric in metrics:
-                report_sets: dict[int, set[int]] = {}
                 for budget in budgets:
-                    snapshot = data["snapshots"][str(budget)]
-                    reports = snapshot["reports"][metric]
-                    reported = {item["node"] for item in reports}
-                    report_sets[budget] = reported
-                    tp = len(reported & hubs)
-                    fp = len(reported - hubs)
-                    if kind == "positive":
-                        recall, precision, f1 = classification_rates(
-                            tp, fp, len(hubs) - tp
-                        )
+                    reported = {
+                        item["node"]
+                        for item in data["snapshots"][str(budget)]["reports"][metric]
+                    }
+                    aggregate = aggregates[(model, metric, budget)]
+                    if kind == "negative":
+                        aggregate["negative_report_rate_sum"] += len(reported) / network.n
+                        aggregate["total_fp"] += len(reported)
                     else:
-                        recall = precision = f1 = None
-                    replicate_rows.append({
-                        "kind": kind, "setting": setting, "repetition": repetition,
-                        "graph": network.name, "model": model,
-                        "metric": METRIC_LABELS[metric], "metric_key": metric,
-                        "budget": budget, "n": network.n, "m": network.m,
-                        "hubs": len(hubs), "reported": len(reported),
-                        "tp": tp, "fp": fp, "no_report": int(not reported),
-                        "recall": recall, "precision": precision, "f1": f1,
-                        "mean_null_edges": snapshot["mean_null_edges"],
-                        "null_seconds": snapshot["null_seconds"],
-                        "observed_seconds": data["observed_seconds"],
-                    })
-                    node_rows.extend({
-                        "kind": kind, "setting": setting,
-                        "graph": network.name, "model": model,
-                        "metric": METRIC_LABELS[metric], "budget": budget,
-                        "node": item["node"],
-                        "true_hub": int(item["node"] in hubs),
-                        "bonferroni_p": item["bonferroni_p"],
-                    } for item in reports)
-                for small, large in combinations(budgets, 2):
-                    first, second = report_sets[small], report_sets[large]
-                    budget_rows.append({
-                        "kind": kind, "setting": setting,
-                        "graph": network.name, "model": model,
-                        "metric": METRIC_LABELS[metric],
-                        "small_budget": small, "large_budget": large,
-                        "same_report_set": first == second,
-                        "small_only": len(first - second),
-                        "large_only": len(second - first),
-                        "intersection": len(first & second),
-                    })
+                        tp = len(reported & hubs)
+                        fp = len(reported - hubs)
+                        fn = len(hubs) - tp
+                        recall, precision, f1 = classification_rates(
+                            tp, fp, fn
+                        )
+                        aggregate["recall_sum"] += recall
+                        aggregate["precision_sum"] += precision
+                        aggregate["f1_sum"] += f1
+                        aggregate["total_tp"] += tp
+                        aggregate["total_fp"] += fp
+                        aggregate["total_fn"] += fn
 
-    write_csv(output / "replicates.csv", replicate_rows, list(replicate_rows[0]))
-    write_csv(output / "significant_nodes.csv", node_rows,
-              ["kind", "setting", "graph", "model", "metric", "budget",
-               "node", "true_hub", "bonferroni_p"])
-    if budget_rows:
-        write_csv(output / "budget_comparison.csv", budget_rows, list(budget_rows[0]))
-
-    setting_rows: list[dict] = []
-    overall_rows: list[dict] = []
-    for kind in ("negative", "positive"):
-        selected_settings = [setting for setting, data in setting_details.items()
-                             if data["kind"] == kind]
-        for setting in selected_settings + ([None] if kind == "negative" else []):
-            for model in models:
-                for metric in metrics:
-                    for budget in budgets:
-                        selected = [row for row in replicate_rows
-                                    if row["kind"] == kind
-                                    and (setting is None or row["setting"] == setting)
-                                    and row["model"] == model
-                                    and row["metric_key"] == metric
-                                    and row["budget"] == budget]
-                        detail = setting_details[setting] if setting is not None else None
-                        summary = {
-                            "kind": kind, "setting": setting or "ALL",
-                            "model": model, "metric": METRIC_LABELS[metric],
-                            "budget": budget, "graphs": len(selected),
-                            "n": detail["n"] if detail else None,
-                            "target_m": detail["target_m"] if detail else None,
-                            "mean_observed_m": mean(selected, "m"),
-                            "hubs": detail["hubs"] if detail else None,
-                            "hub_probability": detail["hub_probability"] if detail else None,
-                            "ordinary_probability": detail["ordinary_probability"] if detail else None,
-                            "mean_reported": mean(selected, "reported"),
-                            "mean_tp": mean(selected, "tp") if kind == "positive" else None,
-                            "mean_fp": mean(selected, "fp"),
-                            "no_report_fraction": mean(selected, "no_report") if kind == "negative" else None,
-                            "mean_recall": mean(selected, "recall") if kind == "positive" else None,
-                            "mean_precision": mean(selected, "precision") if kind == "positive" else None,
-                            "mean_f1": mean(selected, "f1") if kind == "positive" else None,
-                            "mean_null_seconds": mean(selected, "null_seconds"),
-                        }
-                        (setting_rows if setting is not None else overall_rows).append(summary)
-
-    write_csv(output / "setting_summary.csv", setting_rows, list(setting_rows[0]))
-    write_csv(output / "overall_summary.csv", overall_rows, list(overall_rows[0]))
-
+    rows = []
+    micro_rows = []
+    micro_1000_rows = []
+    for model in models:
+        for metric in metrics:
+            for budget in budgets:
+                aggregate = aggregates[(model, metric, budget)]
+                rows.append({
+                    "零模型": model,
+                    "中心性指标": METRIC_LABELS[metric],
+                    "零图数": budget,
+                    "负例误检率": aggregate["negative_report_rate_sum"] / negative_count,
+                    "正例Recall": aggregate["recall_sum"] / positive_count,
+                    "正例Precision": aggregate["precision_sum"] / positive_count,
+                    "正例F1": aggregate["f1_sum"] / positive_count,
+                })
+    columns = list(rows[0])
+    write_csv(output / "summary.csv", rows, columns)
     lines = [
-        "# 精简正负例：零模型与零图数量对比", "",
-        f"{sum(data['kind'] == 'negative' for data in setting_details.values())} 组负例、"
-        f"{sum(data['kind'] == 'positive' for data in setting_details.values())} 组正例，"
-        f"每组 {len(targets) // len(setting_details)} 张目标图；"
-        f"零模型：{', '.join(models)}；指标：{', '.join(METRIC_LABELS[m] for m in metrics)}；"
-        f"零图数：{', '.join(map(str, budgets))}。",
-        "同一目标图用于全部零模型；每个目标图/模型只生成一条零图序列，"
-        "较小预算使用该序列的前缀。每张零图的全部节点分数进入对应指标的零分布。",
-        f"只计算 Bonferroni 校正 p 值并以 p < {alpha} 报告节点；"
-        "不计算或输出原始 p 值。无报告时，正例图的 Precision 和 F1 记为 0。",
-        "负例没有真实中心节点，其 Recall、Precision 和 F1 不定义；"
-        "以平均误报数和无报告图占比评价。",
-        "配置模型严格保持每个标号节点的度数。配置模型和 Chung–Lu 的汇总零分布"
-        "衡量相对随机节点整体的极端程度，不能解释为固定节点条件下的 p 值。",
+        "# 基础正负例实验汇总",
         "",
-        "## 负例整体结果", "",
-        "| 零模型 | 指标 | 零图数 | 平均误报数/图 | 无报告图占比 |",
-        "| --- | --- | ---: | ---: | ---: |",
+        f"共 20 张负例图、20 张正例图；每张图使用不同的参数组合。"
+        f"使用 {', '.join(models)} 零模型、"
+        f"{', '.join(METRIC_LABELS[m] for m in metrics)} 中心性指标，"
+        f"零图数为 {', '.join(map(str, budgets))}。",
+        "**负例误检率**＝先计算每张负例图的报告节点数 / 该图节点数，"
+        "再对 20 张负例图取算术平均。"
+        "正例 Recall、Precision、F1 先逐图计算，再对 20 张正例图取算术平均；"
+        "无报告时 Precision 和 F1 记为 0。",
+        f"使用零图中全部节点的中心性分数构造经验零分布，"
+        f"只计算 Bonferroni 校正 p 值，以校正后 p < {alpha} 报告节点。"
+        "同一张目标图的不同零图预算共享一条零图序列。",
+        "",
+        "| " + " | ".join(columns) + " |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for row in rows:
+        lines.append(
+            f"| {row['零模型']} | {row['中心性指标']} | {row['零图数']} | "
+            f"{row['负例误检率']:.3%} | {row['正例Recall']:.1%} | "
+            f"{row['正例Precision']:.1%} | {row['正例F1']:.1%} |"
+        )
+    lines += [
+        "", "## 正负例合并：节点级整体指标", "",
+        "先合并 40 张图的节点预测，累计 TP、FP、FN，再计算一次 Recall、Precision、F1。"
+        "负例没有真实中心节点，只可能贡献 FP；因此这三项指标是整个测试集的微平均，"
+        "与上表的正例逐图平均值口径不同。", "",
+        "| 零模型 | 中心性指标 | 零图数 | TP | FP | FN | 整体Recall | 整体Precision | 整体F1 |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for model in models:
         for metric in metrics:
             for budget in budgets:
-                row = next(row for row in overall_rows
-                           if row["model"] == model
-                           and row["metric"] == METRIC_LABELS[metric]
-                           and row["budget"] == budget)
-                lines.append(
+                aggregate = aggregates[(model, metric, budget)]
+                tp = aggregate["total_tp"]
+                fp = aggregate["total_fp"]
+                fn = aggregate["total_fn"]
+                recall, precision, f1 = classification_rates(tp, fp, fn)
+                micro_row = (
                     f"| {model} | {METRIC_LABELS[metric]} | {budget} | "
-                    f"{row['mean_fp']:.3f} | {row['no_report_fraction']:.1%} |"
+                    f"{tp} | {fp} | {fn} | {recall:.1%} | {precision:.1%} | {f1:.1%} |"
                 )
-    lines += [
-        "", "## 正例：按参数组分别报告", "",
-        "不同正例组的 N、M、中心节点数和强度不同，因此不计算跨组平均分类分数。", "",
-        "| 参数组 | N | 目标 M | 中心数 | 中心边概率 | 普通边概率 | 零模型 | 指标 | 零图数 | 平均报告数 | 平均检出数 | 平均误报数 | Recall | Precision | F1 |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
-    ]
-    for row in setting_rows:
-        if row["kind"] != "positive":
-            continue
-        lines.append(
-            f"| {row['setting']} | {row['n']} | {row['target_m']} | {row['hubs']} | "
-            f"{row['hub_probability']:.4f} | {row['ordinary_probability']:.4f} | "
-            f"{row['model']} | {row['metric']} | {row['budget']} | "
-            f"{row['mean_reported']:.3f} | {row['mean_tp']:.3f} | {row['mean_fp']:.3f} | "
-            f"{row['mean_recall']:.1%} | {row['mean_precision']:.1%} | {row['mean_f1']:.1%} |"
-        )
-    lines += [
-        "", "各参数组详见 `setting_summary.csv`，逐图结果见 `replicates.csv`，"
-        "校正后显著节点及其校正 p 值见 `significant_nodes.csv`，"
-        "预算间报告集合差异见 `budget_comparison.csv`。",
-    ]
-    (output / "comparison.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+                micro_rows.append(micro_row)
+                if budget == 1000:
+                    micro_1000_rows.append(micro_row)
+    lines.extend(micro_rows)
+    if 1000 in budgets:
+        lines += [
+            "", "## 正负例合并：仅 1000 张零图", "",
+            "| 零模型 | 中心性指标 | 零图数 | TP | FP | FN | 整体Recall | 整体Precision | 整体F1 |",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        ]
+        lines.extend(micro_1000_rows)
+        lines += [
+            "", "## 逐图平均：仅 1000 张零图", "",
+            "正例的 Recall、Precision、F1 分别先对每张正例图计算，"
+            "再对 20 张图取算术平均。负例误检率先逐图计算报告数/节点数，"
+            "再对 20 张图取算术平均。", "",
+            "| 零模型 | 中心性指标 | 零图数 | 负例平均误检率 | 正例平均Recall | 正例平均Precision | 正例平均F1 |",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+        ]
+        for row in rows:
+            if row["零图数"] == 1000:
+                lines.append(
+                    f"| {row['零模型']} | {row['中心性指标']} | {row['零图数']} | "
+                    f"{row['负例误检率']:.3%} | {row['正例Recall']:.1%} | "
+                    f"{row['正例Precision']:.1%} | {row['正例F1']:.1%} |"
+                )
+        lines += [
+            "", "## 1000 张零图：全部指标汇总", "",
+            "逐图平均列与整体列分别使用上文定义的计算口径。", "",
+            "| 零模型 | 中心性指标 | 零图数 | 负例平均误检率 | 正例平均Recall | 正例平均Precision | 正例平均F1 | TP | FP | FN | 整体Recall | 整体Precision | 整体F1 |",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        ]
+        for row in rows:
+            if row["零图数"] != 1000:
+                continue
+            model = row["零模型"]
+            metric = next(key for key in metrics if METRIC_LABELS[key] == row["中心性指标"])
+            aggregate = aggregates[(model, metric, 1000)]
+            tp = aggregate["total_tp"]
+            fp = aggregate["total_fp"]
+            fn = aggregate["total_fn"]
+            recall, precision, f1 = classification_rates(tp, fp, fn)
+            lines.append(
+                f"| {model} | {row['中心性指标']} | 1000 | "
+                f"{row['负例误检率']:.3%} | {row['正例Recall']:.1%} | "
+                f"{row['正例Precision']:.1%} | {row['正例F1']:.1%} | "
+                f"{tp} | {fp} | {fn} | {recall:.1%} | {precision:.1%} | {f1:.1%} |"
+            )
+    (output / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def main() -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repetitions", type=int, default=50)
-    parser.add_argument("--negative-settings", type=int, nargs="+", default=DEFAULT_NEGATIVE_SETTINGS)
-    parser.add_argument("--positive-settings", type=int, nargs="+", default=DEFAULT_POSITIVE_SETTINGS)
     parser.add_argument("--budgets", type=int, nargs="+", default=(100, 500, 1000))
     parser.add_argument("--null-models", nargs="+", choices=MODELS, default=MODELS)
     parser.add_argument("--metrics", nargs="+", choices=METRIC_ORDER, default=METRIC_ORDER)
@@ -325,31 +311,23 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--workers", type=int, default=min(8, os.cpu_count() or 1))
     parser.add_argument("--output", type=Path,
-                        default=Path("experiment_results/basic_reduced_model_budget_comparison"))
+                        default=Path("experiment_results/basic_40_unique_graphs_aggregate"))
     args = parser.parse_args()
     budgets = tuple(args.budgets)
     models = tuple(model for model in MODELS if model in args.null_models)
     metrics = tuple(metric for metric in METRIC_ORDER if metric in args.metrics)
-    if args.repetitions < 1 or args.workers < 1 or not 0 < args.alpha < 1:
-        parser.error("repetitions/workers must be positive; alpha must be between 0 and 1")
-    if len(budgets) < 2 or any(value < 1 for value in budgets) or tuple(sorted(set(budgets))) != budgets:
-        parser.error("budgets must contain at least two distinct positive integers in increasing order")
+    if args.workers < 1 or not 0 < args.alpha < 1:
+        parser.error("workers must be positive; alpha must be between 0 and 1")
+    if not budgets or any(value < 1 for value in budgets) or tuple(sorted(set(budgets))) != budgets:
+        parser.error("budgets must contain distinct positive integers in increasing order")
     if len(args.null_models) != len(set(args.null_models)) or len(args.metrics) != len(set(args.metrics)):
         parser.error("null-models and metrics must not contain duplicates")
-    for name, values, expected in (
-        ("negative-settings", args.negative_settings, 3),
-        ("positive-settings", args.positive_settings, 5),
-    ):
-        if len(values) != expected or len(set(values)) != expected or any(index < 1 or index > len(SPECS) for index in values):
-            parser.error(f"{name} must contain {expected} distinct indices from 1 to {len(SPECS)}")
-
-    negative_settings = tuple(sorted(args.negative_settings))
-    positive_settings = tuple(sorted(args.positive_settings))
-    targets = list(target_graphs(args.seed, args.repetitions, negative_settings, positive_settings))
+    targets = list(target_graphs(args.seed))
     settings = {
-        "seed": args.seed, "repetitions": args.repetitions,
-        "specs": SPECS, "negative_settings": negative_settings,
-        "positive_settings": positive_settings, "models": models, "metrics": metrics,
+        "seed": args.seed,
+        "negative_specs": NEGATIVE_SPECS, "positive_specs": POSITIVE_SPECS,
+        "target_graphs_per_setting": 1,
+        "models": models, "metrics": metrics,
         "budgets": budgets, "alpha": args.alpha,
         "sampling": "per_target_model_shared_prefix_all_null_nodes",
         "p_values": "bonferroni_only", "backend": "igraph",
@@ -365,31 +343,31 @@ def main() -> None:
                                  encoding="utf-8")
 
     pending = [
-        (kind, setting, repetition, network, model,
+        (kind, setting, network, model,
          checkpoint_path(args.output, model, network.name))
-        for kind, setting, repetition, network in targets for model in models
+        for kind, setting, network in targets for model in models
         if not checkpoint_path(args.output, model, network.name).exists()
     ]
     print(f"Target graphs: {len(targets)}; pending target/model tasks: {len(pending)}", flush=True)
     if args.workers == 1:
-        for index, (kind, setting, repetition, network, model, checkpoint) in enumerate(pending, 1):
-            run_target(kind, setting, repetition, network, model,
+        for index, (kind, setting, network, model, checkpoint) in enumerate(pending, 1):
+            run_target(kind, setting, network, model,
                        metrics, budgets, args.alpha, args.seed, checkpoint)
             if index % 10 == 0 or index == len(pending):
                 print(f"Completed {index}/{len(pending)}", flush=True)
     elif pending:
         with ProcessPoolExecutor(max_workers=args.workers) as executor:
             futures = [
-                executor.submit(run_target, kind, setting, repetition, network,
+                executor.submit(run_target, kind, setting, network,
                                 model, metrics, budgets, args.alpha, args.seed, checkpoint)
-                for kind, setting, repetition, network, model, checkpoint in pending
+                for kind, setting, network, model, checkpoint in pending
             ]
             for index, future in enumerate(as_completed(futures), 1):
                 future.result()
                 if index % 10 == 0 or index == len(futures):
                     print(f"Completed {index}/{len(futures)}", flush=True)
     summarize(args.output, targets, models, metrics, budgets, args.alpha)
-    print(f"Report: {args.output / 'comparison.md'}", flush=True)
+    print(f"Report: {args.output / 'summary.md'}", flush=True)
 
 
 if __name__ == "__main__":
