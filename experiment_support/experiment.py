@@ -56,10 +56,10 @@ SUMMARY_FIELDS = [
     "null_model",
     "method",
     "metric",
-    "reported_nodes",
-    "nonreported_nodes",
-    "FP",
-    "Recall",
+    "reported_central_nodes",
+    "reported_non_central_nodes",
+    "false_positives",
+    "accuracy",
     "method_runtime_seconds",
 ]
 AGGREGATE_FIELDS = [
@@ -71,10 +71,11 @@ AGGREGATE_FIELDS = [
     "method",
     "metric",
     "graphs",
-    "mean_reported_nodes",
-    "mean_nonreported_nodes",
-    "mean_FP",
-    "mean_Recall",
+    "mean_reported_central_nodes",
+    "mean_reported_non_central_nodes",
+    "mean_false_positives",
+    "mean_accuracy",
+    "mean_method_runtime_seconds",
 ]
 
 
@@ -126,7 +127,7 @@ def _evaluate_decisions(
     reported_count = sum(reported)
     true_positives = sum(predicted and node in hubs for node, predicted in enumerate(reported))
     false_positives = reported_count - true_positives
-    recall = true_positives / len(hubs) if hubs else None
+    true_negatives = (n - len(hubs)) - false_positives
     return {
         "setting": setting,
         "class": graph_class,
@@ -139,10 +140,10 @@ def _evaluate_decisions(
         "null_model": null_model,
         "method": method,
         "metric": metric,
-        "reported_nodes": reported_count,
-        "nonreported_nodes": n - reported_count,
-        "FP": false_positives,
-        "Recall": recall,
+        "reported_central_nodes": reported_count,
+        "reported_non_central_nodes": n - reported_count,
+        "false_positives": false_positives,
+        "accuracy": (true_positives + true_negatives) / n,
         "method_runtime_seconds": runtime_seconds,
     }
 
@@ -168,13 +169,18 @@ def _aggregate(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "method": method,
             "metric": metric,
             "graphs": len(group),
-            "mean_reported_nodes": fmean(row["reported_nodes"] for row in group),
-            "mean_nonreported_nodes": fmean(row["nonreported_nodes"] for row in group),
-            "mean_FP": fmean(row["FP"] for row in group),
-            "mean_Recall": None,
+            "mean_reported_central_nodes": fmean(
+                row["reported_central_nodes"] for row in group
+            ),
+            "mean_reported_non_central_nodes": fmean(
+                row["reported_non_central_nodes"] for row in group
+            ),
+            "mean_false_positives": fmean(row["false_positives"] for row in group),
+            "mean_accuracy": fmean(row["accuracy"] for row in group),
+            "mean_method_runtime_seconds": fmean(
+                row["method_runtime_seconds"] for row in group
+            ),
         }
-        if graph_class == "positive":
-            record["mean_Recall"] = fmean(row["Recall"] for row in group)
         aggregate_rows.append(record)
     return aggregate_rows
 
@@ -329,8 +335,9 @@ def run_experiment(
         f"Alpha = {alpha}; repetitions per setting = {repetitions}; "
         f"null graphs per target for the proposed method = {null_graphs}; "
         f"proposed null models = {', '.join(null_models)}. HTC and SigEP use GNM only.\n\n"
-        "The table reports mean reported nodes, mean nonreported nodes, mean FP, "
-        "and mean Recall. Recall is NA for negative graphs.\n\n"
+        "The table reports mean nodes classified as central, mean nodes classified as non-central, "
+        "mean false positives, mean accuracy, and mean method runtime. Classification metrics "
+        "are averaged across graphs within each setting.\n\n"
         + _markdown_table(aggregate_rows, AGGREGATE_FIELDS)
         + "\n",
         encoding="utf-8",
