@@ -1,322 +1,397 @@
-"""Empirical centrality p-values for simulated network hubs.
+"""Compare the proposed method, HTC, and SigEP on simulated GNP networks.
 
-Run ``python -m experiment_support.experiment`` to evaluate 10 negative and 10 positive parameter
-sets, with 50 independently seeded graphs per setting.
+Run ``python -m experiment_support.experiment``. Defaults follow
+``experiment.md``: 10 graphs per setting, alpha 0.01, and 1000 null graphs per
+target for the proposed method. The proposed method supports GNM, configuration,
+and Chung-Lu; HTC and SigEP retain their paper-defined GNM procedures.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import json
 import random
 import sys
+import time
 from pathlib import Path
+from statistics import fmean
+from typing import Any
 
-from experiment_support.centrality import METRICS
-from experiment_support.network_core import NULL_MODEL_CHOICES, Network, detect_hubs, gnm_edges, possible_edges
-
-
-def make_negative(name: str, n: int, m: int, rng: random.Random) -> Network:
-    return Network(name, n, gnm_edges(n, m, rng), frozenset(), m, 0, None, None)
-
-
-def make_positive(
-    name: str,
-    n: int,
-    target_m: int,
-    hub_count: int,
-    probability_ratio: float,
-    rng: random.Random,
-) -> Network:
-    """Draw edges independently, with a larger probability for hub-incident edges.
-
-    ``target_m`` is the expected edge count. The realized edge count may differ;
-    inference fits the selected null using the realized graph.
-    """
-    candidates = possible_edges(n)
-    if not 1 <= hub_count < n:
-        raise ValueError("hub_count must be between 1 and n - 1")
-    if probability_ratio <= 1:
-        raise ValueError("probability_ratio must exceed 1")
-    if not 0 < target_m < len(candidates):
-        raise ValueError("target_m must be between 1 and the number of possible edges")
-
-    hubs = frozenset(rng.sample(range(n), hub_count))
-    ordinary_pairs = (n - hub_count) * (n - hub_count - 1) // 2
-    hub_pairs = len(candidates) - ordinary_pairs
-    background_probability = target_m / (ordinary_pairs + probability_ratio * hub_pairs)
-    hub_probability = probability_ratio * background_probability
-    if hub_probability > 1:
-        raise ValueError("parameters imply a hub edge probability above 1")
-
-    edges = tuple(
-        (u, v)
-        for u, v in candidates
-        if rng.random() < (hub_probability if u in hubs or v in hubs else background_probability)
-    )
-    return Network(
-        name,
-        n,
-        edges,
-        hubs,
-        target_m,
-        hub_count,
-        hub_probability,
-        background_probability,
-    )
-
-
-# Ten distinct parameter settings per class. Positive settings vary hub number
-# and edge probability ratio; both classes vary N and target M.
-SPECS = (
-    (60, 90, 1, 3.0),
-    (65, 120, 2, 4.0),
-    (70, 150, 3, 5.0),
-    (75, 180, 1, 6.0),
-    (80, 220, 4, 3.5),
-    (90, 280, 2, 5.0),
-    (100, 350, 5, 4.0),
-    (110, 450, 3, 6.0),
-    (125, 600, 4, 5.5),
-    (150, 900, 5, 7.0),
+from experiment_support.baseline_methods import (
+    benjamini_hochberg,
+    benjamini_hochberg_adjusted,
+    bonferroni,
+    htc_p_values,
+    sigep_p_values,
 )
+from experiment_support.simulated_method_comparison import (
+    ALPHA,
+    METRIC_ORDER,
+    NULL_GRAPHS,
+    PILOT_SETTINGS,
+    REPETITIONS,
+    SETTINGS,
+    empirical_bonferroni_results,
+    generate_target,
+)
+from experiment_support.null_models import NULL_MODELS
 
-SUMMARY_COLUMNS = [
-    "网络名称",
-    "节点数",
-    "平均边数",
-    "正例节点数",
-    "正例节点连边概率",
-    "普通节点连边概率",
-    "报告的中心节点数",
+
+METRIC_LABELS = {
+    "degree": "DC",
+    "harmonic": "HC",
+    "betweenness": "BC",
+    "pagerank": "PR",
+}
+SUMMARY_FIELDS = [
+    "setting",
+    "class",
+    "replicate",
+    "network",
+    "N",
+    "M",
+    "p",
+    "planted_hubs",
+    "null_model",
+    "method",
+    "metric",
+    "reported_nodes",
+    "nonreported_nodes",
+    "FP",
+    "Recall",
+    "method_runtime_seconds",
+]
+AGGREGATE_FIELDS = [
+    "setting",
+    "class",
+    "N",
+    "p",
+    "null_model",
+    "method",
+    "metric",
+    "graphs",
+    "mean_reported_nodes",
+    "mean_nonreported_nodes",
+    "mean_FP",
+    "mean_Recall",
 ]
 
-COMPARISON_COLUMNS = [
-    "网络名称",
-    "节点数",
-    "真实中心节点数",
-    "校正前平均报告数",
-    "校正前平均检出数",
-    "校正前平均误报数",
-    "Bonferroni后平均报告数",
-    "Bonferroni后平均检出数",
-    "Bonferroni后平均误报数",
-]
+
+def _metric_result_rows(
+    network_name: str,
+    n: int,
+    hubs: frozenset[int],
+    p_values: list[float],
+    reported: list[bool],
+    method: str,
+    metric: str,
+    adjusted_p_values: list[float] | None = None,
+    null_model: str = "gnm",
+) -> list[dict[str, Any]]:
+    if len(p_values) != n or len(reported) != n:
+        raise ValueError("one p-value and decision are required for every node")
+    adjusted_p_values = adjusted_p_values or p_values
+    return [
+        {
+            "network": network_name,
+            "node": node,
+            "null_model": null_model,
+            "method": method,
+            "metric": metric,
+            "p_value": p_values[node],
+            "adjusted_p_value": adjusted_p_values[node],
+            "reported": reported[node],
+            "true_hub": node in hubs,
+        }
+        for node in range(n)
+    ]
 
 
-def write_csv(path: Path, rows: list[dict[str, object]], fieldnames: list[str]) -> None:
+def _evaluate_decisions(
+    setting: str,
+    graph_class: str,
+    replicate: int,
+    network_name: str,
+    n: int,
+    m: int,
+    edge_probability: float,
+    hubs: frozenset[int],
+    method: str,
+    metric: str,
+    reported: list[bool],
+    runtime_seconds: float,
+    null_model: str,
+) -> dict[str, Any]:
+    reported_count = sum(reported)
+    true_positives = sum(predicted and node in hubs for node, predicted in enumerate(reported))
+    false_positives = reported_count - true_positives
+    recall = true_positives / len(hubs) if hubs else None
+    return {
+        "setting": setting,
+        "class": graph_class,
+        "replicate": replicate,
+        "network": network_name,
+        "N": n,
+        "M": m,
+        "p": edge_probability,
+        "planted_hubs": len(hubs),
+        "null_model": null_model,
+        "method": method,
+        "metric": metric,
+        "reported_nodes": reported_count,
+        "nonreported_nodes": n - reported_count,
+        "FP": false_positives,
+        "Recall": recall,
+        "method_runtime_seconds": runtime_seconds,
+    }
+
+
+def _aggregate(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    for row in rows:
+        key = (
+            row["setting"], row["class"], row["N"], row["p"], row["null_model"],
+            row["method"], row["metric"]
+        )
+        groups.setdefault(key, []).append(row)
+
+    aggregate_rows = []
+    for key, group in groups.items():
+        setting, graph_class, n, p, null_model, method, metric = key
+        record: dict[str, Any] = {
+            "setting": setting,
+            "class": graph_class,
+            "N": n,
+            "p": p,
+            "null_model": null_model,
+            "method": method,
+            "metric": metric,
+            "graphs": len(group),
+            "mean_reported_nodes": fmean(row["reported_nodes"] for row in group),
+            "mean_nonreported_nodes": fmean(row["nonreported_nodes"] for row in group),
+            "mean_FP": fmean(row["FP"] for row in group),
+            "mean_Recall": None,
+        }
+        if graph_class == "positive":
+            record["mean_Recall"] = fmean(row["Recall"] for row in group)
+        aggregate_rows.append(record)
+    return aggregate_rows
+
+
+def _write_csv(path: Path, rows: list[dict[str, Any]], fields: list[str]) -> None:
     with path.open("w", newline="", encoding="utf-8-sig") as file:
-        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer = csv.DictWriter(file, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
 
 
+def _markdown_table(rows: list[dict[str, Any]], fields: list[str]) -> str:
+    lines = [
+        "| " + " | ".join(fields) + " |",
+        "| " + " | ".join("---" for _ in fields) + " |",
+    ]
+    for row in rows:
+        values = []
+        for field in fields:
+            value = row.get(field)
+            if value is None:
+                values.append("NA")
+            elif isinstance(value, float):
+                values.append(f"{value:.6g}")
+            else:
+                values.append(str(value))
+        lines.append("| " + " | ".join(values) + " |")
+    return "\n".join(lines)
+
+
 def run_experiment(
-    seed: int,
-    null_graphs: int,
-    alpha: float,
-    output: Path,
-    repetitions: int = 50,
-    metric: str = "degree",
-    null_model: str = "gnm",
+    seed: int = 42,
+    null_graphs: int = NULL_GRAPHS,
+    alpha: float = ALPHA,
+    repetitions: int = REPETITIONS,
+    output: Path = Path("experiment_results/simulated_method_comparison"),
+    save_node_results: bool = False,
+    null_models: tuple[str, ...] = ("gnm", "configuration", "chung_lu"),
+    settings: tuple[Any, ...] = SETTINGS,
 ) -> None:
-    if repetitions < 1:
-        raise ValueError("repetitions must be positive")
-
-    summary_rows: list[dict[str, object]] = []
-    comparison_rows: list[dict[str, object]] = []
-    node_rows: list[dict[str, object]] = []
-    edge_rows: list[dict[str, object]] = []
-    replicate_rows: dict[str, list[dict[str, object]]] = {"negative": [], "positive": []}
-
-    for kind in ("negative", "positive"):
-        for index, (n, target_m, hub_count, ratio) in enumerate(SPECS, start=1):
-            name = f"{kind}_{index:02d}"
-            reported_counts: list[int] = []
-            true_positive_counts: list[int] = []
-            bonferroni_reported_counts: list[int] = []
-            bonferroni_true_positive_counts: list[int] = []
-            observed_edges: list[int] = []
-            hub_probability: float | None = None
-            background_probability: float | None = None
-
-            for repetition in range(1, repetitions + 1):
-                graph_seed = f"{seed}:{name}:{repetition}:graph"
-                null_seed = f"{seed}:{name}:{repetition}:null"
-                replicate_name = f"{name}_rep{repetition:02d}"
-                graph_rng = random.Random(graph_seed)
-                network = (
-                    make_negative(replicate_name, n, target_m, graph_rng)
-                    if kind == "negative"
-                    else make_positive(replicate_name, n, target_m, hub_count, ratio, graph_rng)
-                )
-                results = detect_hubs(
-                    network, null_graphs, alpha, random.Random(null_seed), metric, null_model
-                )
-                reported = sum(bool(row["predicted_hub"]) for row in results)
-                true_positives = sum(
-                    bool(row["predicted_hub"] and row["true_hub"]) for row in results
-                )
-                bonferroni_reported = sum(
-                    bool(row["predicted_hub_bonferroni"]) for row in results
-                )
-                bonferroni_true_positives = sum(
-                    bool(row["predicted_hub_bonferroni"] and row["true_hub"])
-                    for row in results
-                )
-                reported_counts.append(reported)
-                true_positive_counts.append(true_positives)
-                bonferroni_reported_counts.append(bonferroni_reported)
-                bonferroni_true_positive_counts.append(bonferroni_true_positives)
-                observed_edges.append(network.m)
-                hub_probability = network.hub_probability
-                background_probability = network.background_probability
-                replicate_rows[kind].append(
-                    {
-                        "parameter_set": name,
-                        "replicate": repetition,
-                        "graph_seed": graph_seed,
-                        "null_seed": null_seed,
-                        "observed_m": network.m,
-                        "reported_hubs": reported,
-                        "true_positives": true_positives,
-                        "false_positives": reported - true_positives,
-                        "bonferroni_reported_hubs": bonferroni_reported,
-                        "bonferroni_true_positives": bonferroni_true_positives,
-                        "bonferroni_false_positives": (
-                            bonferroni_reported - bonferroni_true_positives
-                        ),
-                    }
-                )
-                node_rows.extend({"network": replicate_name, **row} for row in results)
-                edge_rows.extend(
-                    {"network": replicate_name, "source": u, "target": v}
-                    for u, v in network.edges
-                )
-
-            summary_rows.append(
-                {
-                    "网络名称": name,
-                    "节点数": n,
-                    "平均边数": f"{sum(observed_edges) / repetitions:.2f}",
-                    "正例节点数": hub_count if kind == "positive" else 0,
-                    "正例节点连边概率": (
-                        f"{hub_probability:.6f}" if hub_probability is not None else "null"
-                    ),
-                    "普通节点连边概率": (
-                        f"{background_probability:.6f}"
-                        if background_probability is not None
-                        else "null"
-                    ),
-                    "报告的中心节点数": f"{sum(reported_counts) / repetitions:.2f}",
-                }
-            )
-            comparison_rows.append(
-                {
-                    "网络名称": name,
-                    "节点数": n,
-                    "真实中心节点数": hub_count if kind == "positive" else 0,
-                    "校正前平均报告数": f"{sum(reported_counts) / repetitions:.2f}",
-                    "校正前平均检出数": f"{sum(true_positive_counts) / repetitions:.2f}",
-                    "校正前平均误报数": (
-                        f"{(sum(reported_counts) - sum(true_positive_counts)) / repetitions:.2f}"
-                    ),
-                    "Bonferroni后平均报告数": (
-                        f"{sum(bonferroni_reported_counts) / repetitions:.2f}"
-                    ),
-                    "Bonferroni后平均检出数": (
-                        f"{sum(bonferroni_true_positive_counts) / repetitions:.2f}"
-                    ),
-                    "Bonferroni后平均误报数": (
-                        f"{(sum(bonferroni_reported_counts) - sum(bonferroni_true_positive_counts)) / repetitions:.2f}"
-                    ),
-                }
-            )
+    if null_graphs < 1 or repetitions < 1:
+        raise ValueError("null_graphs and repetitions must be positive")
+    if not 0 < alpha < 1:
+        raise ValueError("alpha must be between 0 and 1")
+    unknown_models = set(null_models) - NULL_MODELS.keys()
+    if not null_models or unknown_models:
+        raise ValueError(f"null_models must be selected from {', '.join(NULL_MODELS)}")
 
     output.mkdir(parents=True, exist_ok=True)
-    write_csv(output / "network_summary.csv", summary_rows, SUMMARY_COLUMNS)
-    write_csv(output / "bonferroni_comparison.csv", comparison_rows, COMPARISON_COLUMNS)
-    for kind, rows in replicate_rows.items():
-        write_csv(output / f"{kind}_replicates.csv", rows, list(rows[0]))
-    write_csv(output / "node_results.csv", node_rows, list(node_rows[0]))
-    write_csv(output / "network_edges.csv", edge_rows, ["network", "source", "target"])
-    markdown_lines = [
-        "| " + " | ".join(SUMMARY_COLUMNS) + " |",
-        "| " + " | ".join("---" for _ in SUMMARY_COLUMNS) + " |",
-    ]
-    markdown_lines.extend(
-        "| " + " | ".join(str(row[column]) for column in SUMMARY_COLUMNS) + " |"
-        for row in summary_rows
+    summary_rows: list[dict[str, Any]] = []
+    node_writer = None
+    node_file = None
+    if save_node_results:
+        node_file = (output / "node_results.csv").open("w", newline="", encoding="utf-8-sig")
+        node_fields = [
+            "network", "node", "null_model", "method", "metric", "centrality_score", "p_value", "adjusted_p_value",
+            "reported", "true_hub",
+        ]
+        node_writer = csv.DictWriter(node_file, fieldnames=node_fields, extrasaction="ignore")
+        node_writer.writeheader()
+
+    try:
+        for setting in settings:
+            graph_class = "positive" if setting.positive else "negative"
+            for replicate in range(1, repetitions + 1):
+                network = generate_target(setting, replicate, seed)
+                print(
+                    f"[{setting.name} {graph_class} {replicate}/{repetitions}] "
+                    f"N={network.n}, M={network.m}",
+                    flush=True,
+                )
+
+                for null_model in null_models:
+                    print(f"  [proposed / {null_model}]", flush=True)
+                    started = time.perf_counter()
+                    proposed = empirical_bonferroni_results(
+                        network,
+                        null_graphs,
+                        alpha,
+                        random.Random(f"{seed}:{network.name}:{null_model}"),
+                        null_model,
+                    )
+                    elapsed = time.perf_counter() - started
+                    for metric in METRIC_ORDER:
+                        rows = proposed[metric]
+                        metric_label = METRIC_LABELS[metric]
+                        summary_rows.append(
+                            _evaluate_decisions(
+                                setting.name, graph_class, replicate, network.name, network.n,
+                                network.m, setting.p, network.hubs, "Proposed", metric_label,
+                                [bool(row["reported"]) for row in rows], elapsed, null_model,
+                            )
+                        )
+                        if node_writer:
+                            node_writer.writerows(
+                                {
+                                    **row,
+                                    "method": "Proposed",
+                                    "metric": metric_label,
+                                }
+                                for row in rows
+                            )
+
+                started = time.perf_counter()
+                htc_p = htc_p_values(network)
+                htc_adjusted = [min(1.0, network.n * value) for value in htc_p]
+                htc_reported = bonferroni(htc_p, alpha)
+                htc_runtime = time.perf_counter() - started
+                summary_rows.append(
+                    _evaluate_decisions(
+                        setting.name, graph_class, replicate, network.name, network.n,
+                        network.m, setting.p, network.hubs, "HTC", "neighbor_degree_sum",
+                        htc_reported, htc_runtime, "gnm",
+                    )
+                )
+                if node_writer:
+                    node_writer.writerows(
+                        _metric_result_rows(
+                            network.name, network.n, network.hubs, htc_p, htc_reported,
+                            "HTC", "neighbor_degree_sum", htc_adjusted, "gnm",
+                        )
+                    )
+
+                started = time.perf_counter()
+                sigep_p = sigep_p_values(network)
+                sigep_reported = benjamini_hochberg(sigep_p, alpha)
+                sigep_adjusted = benjamini_hochberg_adjusted(sigep_p)
+                sigep_runtime = time.perf_counter() - started
+                summary_rows.append(
+                    _evaluate_decisions(
+                        setting.name, graph_class, replicate, network.name, network.n,
+                        network.m, setting.p, network.hubs, "SigEP", "degree+clustering",
+                        sigep_reported, sigep_runtime, "gnm",
+                    )
+                )
+                if node_writer:
+                    node_writer.writerows(
+                        _metric_result_rows(
+                            network.name, network.n, network.hubs, sigep_p, sigep_reported,
+                            "SigEP", "degree+clustering", sigep_adjusted, "gnm",
+                        )
+                    )
+    finally:
+        if node_file:
+            node_file.close()
+
+    aggregate_rows = _aggregate(summary_rows)
+    _write_csv(output / "network_summary.csv", summary_rows, SUMMARY_FIELDS)
+    _write_csv(output / "aggregate_summary.csv", aggregate_rows, AGGREGATE_FIELDS)
+    (output / "aggregate_summary.md").write_text(
+        "# Simulated method comparison\n\n"
+        f"Alpha = {alpha}; repetitions per setting = {repetitions}; "
+        f"null graphs per target for the proposed method = {null_graphs}; "
+        f"proposed null models = {', '.join(null_models)}. HTC and SigEP use GNM only.\n\n"
+        "The table reports mean reported nodes, mean nonreported nodes, mean FP, "
+        "and mean Recall. Recall is NA for negative graphs.\n\n"
+        + _markdown_table(aggregate_rows, AGGREGATE_FIELDS)
+        + "\n",
+        encoding="utf-8",
     )
-    markdown_table = "\n".join(markdown_lines) + (
-        f"\n\n中心性指标：{metric}。每组参数独立模拟 {repetitions} 张图。“平均边数”和“报告的中心节点数”"
-        "均为这些图的平均值；GNM 按每张图的实际边数构造零分布，其他零模型按实际图拟合。\n"
+    (output / "settings.json").write_text(
+        json.dumps(
+            {
+                "seed": seed,
+                "alpha": alpha,
+                "repetitions": repetitions,
+                "proposed_null_models": list(null_models),
+                "baseline_null_model": "gnm",
+                "null_graphs_per_target": null_graphs,
+                "positive_hub_ratio": 10,
+                "positive_hub_fraction": 0.01,
+                "metrics": list(METRIC_ORDER),
+                "settings": [setting.__dict__ for setting in settings],
+                "pilot": settings == PILOT_SETTINGS,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
     )
-    markdown_table += (
-        f"\n零模型：{null_model}；每张目标图使用 {null_graphs} 张零模型图。"
-        + ("每张零模型图的全部节点分数参与 p 值估计。" if null_model != "gnm" else "")
-        + "\n"
-    )
-    (output / "network_summary.md").write_text(markdown_table, encoding="utf-8")
-    comparison_lines = [
-        "| " + " | ".join(COMPARISON_COLUMNS) + " |",
-        "| " + " | ".join("---" for _ in COMPARISON_COLUMNS) + " |",
-    ]
-    comparison_lines.extend(
-        "| " + " | ".join(str(row[column]) for column in COMPARISON_COLUMNS) + " |"
-        for row in comparison_rows
-    )
-    negative_rows = replicate_rows["negative"]
-    positive_rows = replicate_rows["positive"]
-    total_planted = repetitions * sum(spec[2] for spec in SPECS)
-    comparison_notes = (
-        f"\n\n中心性指标：{metric}。每组独立模拟 {repetitions} 张图；原始阈值为 p < {alpha}，"
-        f"Bonferroni 阈值为 p < {alpha}/N。\n\n"
-        "负例：无误报的网络数由 "
-        f"{sum(row['reported_hubs'] == 0 for row in negative_rows)}/{len(negative_rows)} "
-        f"变为 {sum(row['bonferroni_reported_hubs'] == 0 for row in negative_rows)}/{len(negative_rows)}；"
-        f"误报节点总数由 {sum(int(row['false_positives']) for row in negative_rows)} "
-        f"降为 {sum(int(row['bonferroni_false_positives']) for row in negative_rows)}。\n\n"
-        f"正例：{total_planted} 个植入节点中，检出数由 "
-        f"{sum(int(row['true_positives']) for row in positive_rows)} "
-        f"变为 {sum(int(row['bonferroni_true_positives']) for row in positive_rows)}；"
-        f"误报节点总数由 {sum(int(row['false_positives']) for row in positive_rows)} "
-        f"降为 {sum(int(row['bonferroni_false_positives']) for row in positive_rows)}。\n"
-    )
-    comparison_notes += f"\n零模型：{null_model}；每张目标图模拟 {null_graphs} 张零模型图。\n"
-    (output / "bonferroni_comparison.md").write_text(
-        "\n".join(comparison_lines) + comparison_notes, encoding="utf-8"
-    )
-    print(markdown_table)
-    print(f"Wrote summary, Bonferroni comparison, and detailed results to {output}")
+    print(f"Wrote simulation comparison results to {output}")
 
 
 def main() -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--seed", type=int, default=42, help="random seed (default: 42)")
-    parser.add_argument("--metric", choices=METRICS, default="degree")
-    parser.add_argument("--null-model", choices=NULL_MODEL_CHOICES, default="gnm")
-    parser.add_argument("--null-graphs", type=int, help="null graphs per network")
-    parser.add_argument("--repetitions", type=int, default=50, help="graphs per setting")
-    parser.add_argument("--alpha", type=float, default=0.05, help="p-value threshold")
-    parser.add_argument("--output", type=Path)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--null-graphs", type=int, default=NULL_GRAPHS)
+    parser.add_argument("--repetitions", type=int, default=REPETITIONS)
+    parser.add_argument("--alpha", type=float, default=ALPHA)
+    parser.add_argument(
+        "--pilot", action="store_true",
+        help="use four 200-node positive/negative settings for a quick pilot",
+    )
+    parser.add_argument(
+        "--null-models", nargs="+", choices=tuple(NULL_MODELS),
+        default=("gnm", "configuration", "chung_lu"),
+        help="null models for the proposed method; HTC and SigEP always use GNM",
+    )
+    parser.add_argument(
+        "--output", type=Path,
+        default=Path("experiment_results/simulated_method_comparison"),
+    )
+    parser.add_argument(
+        "--save-node-results", action="store_true",
+        help="write per-node p-values (can produce a large CSV)",
+    )
     args = parser.parse_args()
+    if args.null_graphs < 1 or args.repetitions < 1:
+        parser.error("--null-graphs and --repetitions must be positive")
     if not 0 < args.alpha < 1:
         parser.error("--alpha must be between 0 and 1")
-    if args.null_graphs is not None and args.null_graphs < 1:
-        parser.error("--null-graphs must be positive")
-    null_graphs = args.null_graphs if args.null_graphs is not None else 100
-    output = args.output or (
-        (Path("experiment_results/basic_experiment")
-         if args.metric == "degree" else Path("experiment_results") / f"{args.metric}_experiment")
-        if args.null_model == "gnm" else
-        Path("experiment_results") / f"{args.metric}_{args.null_model}_experiment"
-    )
     run_experiment(
-        args.seed, null_graphs, args.alpha, output, args.repetitions, args.metric,
-        args.null_model,
+        args.seed, args.null_graphs, args.alpha, args.repetitions, args.output,
+        args.save_node_results, tuple(args.null_models),
+        PILOT_SETTINGS if args.pilot else SETTINGS,
     )
 
 
