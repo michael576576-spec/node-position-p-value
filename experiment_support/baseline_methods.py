@@ -72,7 +72,10 @@ def _htc_mass(n: int, m: int, score: int, log_total_graphs: float, np, gammaln, 
         )
         return float(np.exp(log_count - log_total_graphs)) if np.isfinite(log_count) else 0.0
 
-    degree = np.arange(2, min(n - 1, score, m) + 1, dtype=np.int64)
+    # Include focal degree 1 as well as degree >= 2. For score >= 2, the
+    # degree-1 case occurs when the focal node has one neighbor whose own
+    # degree is ``score``; omitting it undercounts the HTC mass.
+    degree = np.arange(1, min(n - 1, score, m) + 1, dtype=np.int64)
     neighbor_pairs = degree * (degree - 1) // 2 + degree * (n - 1 - degree)
     untouched_pairs = (n - 1 - degree) * (n - 2 - degree) // 2
     terms = (
