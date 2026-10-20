@@ -43,7 +43,7 @@ def write_comparison_plot(output: Path, rows: list[dict[str, float | str]], metr
         metric_rows = [row for row in rows if row["metric"] == metric]
         x_values = [float(row["ratio"]) for row in metric_rows]
         for axis, (key, label, limits) in zip(axes.flat, plots):
-            axis.plot(x_values, [float(row[key]) for row in metric_rows], marker="o", label=METRIC_LABELS[metric])
+            axis.plot(x_values, [float(row[key]) for row in metric_rows], marker="o", label=METRIC_LABELS.get(metric, metric))
             axis.set_ylabel(label)
             if limits is not None:
                 axis.set_ylim(*limits)

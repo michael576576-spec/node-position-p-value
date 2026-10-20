@@ -3,6 +3,7 @@
 The default experiment uses 50 target graphs per ratio, 1000 null graphs per
 target graph and model, and all four centrality metrics. Completed target
 graphs are checkpointed, so repeating the same command resumes the run.
+HTC and exact SigEP are compared only within the GNM group.
 """
 
 from __future__ import annotations
@@ -21,6 +22,9 @@ from pathlib import Path
 import numpy as np
 
 from experiment_support.centrality import METRICS, compute_multiple_scores_igraph
+from experiment_support.baseline_methods import (
+    benjamini_hochberg, bonferroni, htc_p_values, sigep_p_values,
+)
 from experiment_support.compare_metrics import METRIC_LABELS, write_comparison_plot
 from experiment_support.network_core import Network
 from experiment_support.null_models import NULL_MODELS
@@ -34,6 +38,12 @@ SUMMARY_FIELDS = (
     "model", "metric", "ratio", "ordinary_probability", "hub_probability",
     "bonf_recall", "bonf_precision", "bonf_f1", "bonf_mean_reported", "bonf_mean_fp",
 )
+BASELINE_METHODS = ("HTC", "SigEP")
+EXTENDED_RATIOS = DEFAULT_RATIOS + (8.0, 10.0, 15.0)
+ALL_METHOD_FIELDS = (
+    "model", "metric", "decision_rule", "ratio", "ordinary_probability",
+    "hub_probability", "recall", "precision", "f1", "mean_reported", "mean_fp",
+)
 
 
 def write_csv(path: Path, rows: list[dict], columns: tuple[str, ...]) -> None:
@@ -45,6 +55,50 @@ def write_csv(path: Path, rows: list[dict], columns: tuple[str, ...]) -> None:
 
 def checkpoint_path(root: Path, model: str, network: Network) -> Path:
     return root / "checkpoints" / model / f"{network.name}.json"
+
+
+def baseline_checkpoint_path(root: Path, network: Network) -> Path:
+    return root / "checkpoints" / "gnm_baselines" / f"{network.name}.json"
+
+
+def run_baselines_target(
+    ratio: float, repetition: int, network: Network, alpha: float, path: Path,
+) -> str:
+    """Apply HTC/Bonferroni and exact SigEP/BH to a shared target graph."""
+    htc_p = htc_p_values(network)
+    sigep_p = sigep_p_values(network, mode="exact")
+    decisions = (
+        ("HTC", htc_p, bonferroni(htc_p, alpha)),
+        ("SigEP", sigep_p, benjamini_hochberg(sigep_p, alpha, strict=False)),
+    )
+    results = {}
+    for method, p_values, reported in decisions:
+        tp = sum(decision and node in network.hubs for node, decision in enumerate(reported))
+        fp = sum(reported) - tp
+        recall, precision, f1 = classification_rates(tp, fp, len(network.hubs) - tp)
+        results[method] = {
+            "reported": sum(reported), "true_positives": tp,
+            "false_positives": fp, "recall": recall,
+            "precision": precision, "f1": f1,
+            "nodes": [
+                {"node": node, "p_value": float(p_value),
+                 "predicted_hub": bool(reported[node]), "true_hub": node in network.hubs}
+                for node, p_value in enumerate(p_values)
+            ],
+        }
+    payload = {
+        "model": "gnm", "ratio": ratio, "repetition": repetition,
+        "graph": network.name, "hubs": sorted(network.hubs),
+        "ordinary_probability": network.background_probability,
+        "hub_probability": network.hub_probability,
+        "alpha": alpha, "sigep_mode": "exact", "sigep_bh_rule": "<=",
+        "methods": results,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.stem}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    os.replace(temporary, path)
+    return network.name
 
 
 def run_target(
@@ -203,6 +257,82 @@ def summarize_model(
     return summary
 
 
+def summarize_baselines(
+    root: Path, targets: list[tuple[float, int, Network]],
+    ratios: tuple[float, ...], repetitions: int, alpha: float,
+) -> list[dict]:
+    """Write graph and node records, then average HTC/SigEP per graph."""
+    replicate_rows = []
+    node_rows = []
+    probabilities = {}
+    for ratio, repetition, network in targets:
+        path = baseline_checkpoint_path(root, network)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if (
+            payload["graph"] != network.name
+            or payload["ratio"] != ratio
+            or payload["repetition"] != repetition
+            or payload["hubs"] != sorted(network.hubs)
+            or payload["alpha"] != alpha
+            or payload["sigep_mode"] != "exact"
+        ):
+            raise ValueError(f"baseline checkpoint does not match experiment: {path}")
+        probabilities[ratio] = (payload["ordinary_probability"], payload["hub_probability"])
+        for method in BASELINE_METHODS:
+            result = payload["methods"][method]
+            replicate_rows.append({
+                "model": "gnm", "metric": method, "ratio": ratio,
+                "repetition": repetition, "graph": network.name,
+                "decision_rule": "Bonferroni" if method == "HTC" else "BH <=",
+                "reported": result["reported"], "tp": result["true_positives"],
+                "fp": result["false_positives"], "recall": result["recall"],
+                "precision": result["precision"], "f1": result["f1"],
+            })
+            node_rows.extend(
+                {"model": "gnm", "metric": method, "ratio": ratio,
+                 "repetition": repetition, "graph": network.name,
+                 "p_value_scale": "raw" if method == "HTC" else "N_scaled",
+                 **node}
+                for node in result["nodes"]
+            )
+    directory = root / "gnm"
+    write_csv(directory / "baseline_replicates.csv", replicate_rows, tuple(replicate_rows[0]))
+    write_csv(directory / "baseline_node_results.csv", node_rows, tuple(node_rows[0]))
+    summary = []
+    for method in BASELINE_METHODS:
+        for ratio in ratios:
+            selected = [row for row in replicate_rows if row["metric"] == method and row["ratio"] == ratio]
+            if len(selected) != repetitions:
+                raise ArithmeticError(f"missing repeats for {method}/{ratio:g}")
+            ordinary_probability, hub_probability = probabilities[ratio]
+            summary.append({
+                "model": "gnm", "metric": method,
+                "decision_rule": "Bonferroni" if method == "HTC" else "BH <=",
+                "ratio": ratio,
+                "ordinary_probability": ordinary_probability,
+                "hub_probability": hub_probability,
+                "recall": sum(row["recall"] for row in selected) / repetitions,
+                "precision": sum(row["precision"] for row in selected) / repetitions,
+                "f1": sum(row["f1"] for row in selected) / repetitions,
+                "mean_reported": sum(row["reported"] for row in selected) / repetitions,
+                "mean_fp": sum(row["fp"] for row in selected) / repetitions,
+            })
+    write_csv(directory / "baseline_summary.csv", summary, ALL_METHOD_FIELDS)
+    return summary
+
+
+def centrality_as_all_method(row: dict) -> dict:
+    return {
+        "model": row["model"], "metric": row["metric"],
+        "decision_rule": "Bonferroni", "ratio": row["ratio"],
+        "ordinary_probability": row["ordinary_probability"],
+        "hub_probability": row["hub_probability"],
+        "recall": row["bonf_recall"], "precision": row["bonf_precision"],
+        "f1": row["bonf_f1"], "mean_reported": row["bonf_mean_reported"],
+        "mean_fp": row["bonf_mean_fp"],
+    }
+
+
 def comparison_plot(root: Path, rows: list[dict], ratios: tuple[float, ...]) -> None:
     os.environ.setdefault("MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / "node_position_pvalue_matplotlib"))
     import matplotlib
@@ -211,16 +341,18 @@ def comparison_plot(root: Path, rows: list[dict], ratios: tuple[float, ...]) -> 
 
     models = (("gnm", "GNM"), ("configuration", "Configuration"), ("chung_lu", "Chung–Lu"))
     fig, axes = plt.subplots(3, 3, figsize=(15, 11), sharex=True, sharey=True)
-    measures = (("bonf_recall", "Recall"), ("bonf_precision", "Precision"), ("bonf_f1", "F1 Score"))
+    measures = (("recall", "Recall"), ("precision", "Precision"), ("f1", "F1 Score"))
     for i, (model, model_label) in enumerate(models):
         for j, (key, title) in enumerate(measures):
             axis = axes[i, j]
-            for metric in METRIC_ORDER:
+            metrics = METRIC_ORDER + BASELINE_METHODS if model == "gnm" else METRIC_ORDER
+            for metric in metrics:
                 selected = [row for row in rows if row["model"] == model and row["metric"] == metric]
                 if not selected:
                     continue
                 by_ratio = {float(row["ratio"]): float(row[key]) for row in selected}
-                axis.plot(ratios, [by_ratio[ratio] for ratio in ratios], marker="o", label=METRIC_LABELS[metric])
+                label = metric if metric in BASELINE_METHODS else METRIC_LABELS[metric]
+                axis.plot(ratios, [by_ratio[ratio] for ratio in ratios], marker="o", label=label)
             axis.set_title(f"{model_label} — {title}")
             axis.set_ylim(0, 1.04)
             axis.set_xticks(ratios)
@@ -242,7 +374,7 @@ def main() -> None:
     parser.add_argument("--n", type=int, default=100)
     parser.add_argument("--m", type=int, default=350)
     parser.add_argument("--hubs", type=int, default=3)
-    parser.add_argument("--ratios", type=float, nargs="+", default=DEFAULT_RATIOS)
+    parser.add_argument("--ratios", type=float, nargs="+", default=EXTENDED_RATIOS)
     parser.add_argument("--repetitions", type=int, default=50)
     parser.add_argument("--null-graphs", type=int, default=1000)
     parser.add_argument("--alpha", type=float, default=0.05)
@@ -266,20 +398,28 @@ def main() -> None:
         "n": args.n, "m": args.m, "hubs": args.hubs, "ratios": ratios,
         "repetitions": args.repetitions, "null_graphs": args.null_graphs,
         "alpha": args.alpha, "seed": args.seed, "models": MODELS, "metrics": METRIC_ORDER,
-        "pooling": "all_nodes_per_target", "backend": BACKEND, "version": 3,
+        "pooling": "all_nodes_per_target", "backend": BACKEND,
+        "gnm_baselines": list(BASELINE_METHODS),
+        "baseline_rules": {"HTC": "Bonferroni", "SigEP": "BH <=, exact joint tail"},
+        "version": 4,
     }
     args.output.mkdir(parents=True, exist_ok=True)
     settings_path = args.output / "settings.json"
     if settings_path.exists():
         existing = json.loads(settings_path.read_text(encoding="utf-8"))
-        if existing != json.loads(json.dumps(settings)):
-            previous = {key: value for key, value in existing.items() if key not in {"backend", "version"}}
-            current = {
-                key: value for key, value in json.loads(json.dumps(settings)).items()
-                if key not in {"backend", "version"}
-            }
-            if previous != current or existing.get("version") != 1:
-                raise ValueError(f"settings differ from existing run in {args.output}")
+        current = json.loads(json.dumps(settings))
+        fixed_keys = (
+            "n", "m", "hubs", "repetitions", "null_graphs", "alpha", "seed",
+            "models", "metrics", "pooling", "backend",
+        )
+        if (
+            any(existing.get(key) != current[key] for key in fixed_keys)
+            or existing.get("ratios") != current["ratios"][:len(existing.get("ratios", []))]
+            or existing.get("gnm_baselines", list(BASELINE_METHODS)) != list(BASELINE_METHODS)
+            or existing.get("version") not in (3, 4)
+        ):
+            raise ValueError(f"settings differ from existing run in {args.output}")
+        if existing != current:
             settings_path.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
     else:
         settings_path.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -290,8 +430,24 @@ def main() -> None:
         if not checkpoint_path(args.output, model, network).exists()
         or json.loads(checkpoint_path(args.output, model, network).read_text(encoding="utf-8")).get("backend") != BACKEND
     ]
+    baseline_pending = [
+        (ratio, repetition, network, baseline_checkpoint_path(args.output, network))
+        for ratio, repetition, network in targets
+        if not baseline_checkpoint_path(args.output, network).exists()
+    ]
     print(f"Target graphs: {len(targets)}; pending model/graph pairs: {len(pending)}", flush=True)
+    print(f"Pending GNM baseline graphs: {len(baseline_pending)}", flush=True)
     started = time.perf_counter()
+    if baseline_pending:
+        with ProcessPoolExecutor(max_workers=args.workers) as executor:
+            futures = [
+                executor.submit(run_baselines_target, ratio, repetition, network, args.alpha, path)
+                for ratio, repetition, network, path in baseline_pending
+            ]
+            for finished, future in enumerate(as_completed(futures), start=1):
+                future.result()
+                if finished % 50 == 0 or finished == len(futures):
+                    print(f"Completed GNM baselines {finished}/{len(futures)}", flush=True)
     if pending:
         with ProcessPoolExecutor(max_workers=args.workers) as executor:
             futures = [
@@ -312,15 +468,33 @@ def main() -> None:
         summaries.extend(summary)
     combined = summaries
     write_csv(args.output / "comparison.csv", combined, SUMMARY_FIELDS)
+    baseline_summary = summarize_baselines(args.output, targets, ratios, args.repetitions, args.alpha)
+    all_methods = [centrality_as_all_method(row) for row in combined] + baseline_summary
+    write_csv(args.output / "comparison_all_methods.csv", all_methods, ALL_METHOD_FIELDS)
+    gnm_all_methods = [row for row in all_methods if row["model"] == "gnm"]
+    write_csv(args.output / "gnm" / "comparison_all_methods.csv", gnm_all_methods, ALL_METHOD_FIELDS)
+    gnm_plot_rows = [row for row in combined if row["model"] == "gnm"] + [
+        {
+            **row,
+            "bonf_recall": row["recall"], "bonf_precision": row["precision"],
+            "bonf_f1": row["f1"],
+        }
+        for row in baseline_summary
+    ]
+    write_comparison_plot(args.output / "gnm", gnm_plot_rows, METRIC_ORDER + BASELINE_METHODS)
     lines = [
         "# 零模型与中心性指标比较", "",
         f"固定 N={args.n}、M={args.m}、中心节点数={args.hubs}；每倍率 {args.repetitions} 张目标图；"
         f"每张目标图分别使用 {args.null_graphs} 张对应模型的零模型图；三种模型互不共用零分布。",
         "每张零模型图全部节点的中心性分数参与经验尾概率计算。",
-        f"Bonferroni 校正 p < {args.alpha}。各模型使用相同目标图和植入中心节点。",
+        f"四项中心性使用 Bonferroni p < {args.alpha}；HTC 使用 Bonferroni p <= {args.alpha}；"
+        "SigEP 使用 BH <=。"
+        "各模型使用相同目标图和植入中心节点。",
         "配置模型严格保持各节点度数；其汇总 p 值衡量相对随机节点整体的极端程度，"
         "不能解释为固定该节点度数后的逐节点 p 值。",
-        "Bonferroni 阈值用于统一比较；对配置模型和 Chung–Lu 的汇总零分布，不据此声称严格的逐节点误报率控制。", "",
+        "对配置模型和 Chung–Lu 的汇总零分布，不据此声称严格的逐节点误报率控制。",
+        "HTC 和 SigEP 只对应 GNM；SigEP 使用条件超几何联合尾概率。"
+        "所有方法的逐强度汇总见 comparison_all_methods.csv。", "",
         "| 倍率 | 零模型 | 指标 | 召回率 | 精确率 | F1 | 平均报告数 | 平均误报数 |",
         "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |",
     ]
@@ -334,8 +508,17 @@ def main() -> None:
                     f"{float(row['bonf_f1']):.1%} | {float(row['bonf_mean_reported']):.2f} | "
                     f"{float(row['bonf_mean_fp']):.2f} |"
                 )
+            if model == "gnm":
+                for method in BASELINE_METHODS:
+                    row = next(row for row in baseline_summary if row["metric"] == method and float(row["ratio"]) == ratio)
+                    lines.append(
+                        f"| {ratio:g} | gnm | {method} | "
+                        f"{row['recall']:.1%} | {row['precision']:.1%} | "
+                        f"{row['f1']:.1%} | {row['mean_reported']:.2f} | "
+                        f"{row['mean_fp']:.2f} |"
+                    )
     (args.output / "comparison.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    comparison_plot(args.output, combined, ratios)
+    comparison_plot(args.output, all_methods, ratios)
     print(f"Saved combined comparison to {args.output}; elapsed {time.perf_counter()-started:.1f}s")
 
 
