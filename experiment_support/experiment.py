@@ -1,9 +1,11 @@
 """Compare the proposed method, HTC, and SigEP on simulated GNP networks.
 
 Run ``python -m experiment_support.experiment``. Defaults follow
-``experiment.md``: 10 graphs per setting, alpha 0.01, and 1000 null graphs per
+``experiment.md``: 10 graphs per setting, alpha 0.01, and 100 null graphs per
 target for the proposed method. The proposed method supports GNM, configuration,
-and Chung-Lu; HTC and SigEP retain their paper-defined GNM procedures.
+and Chung-Lu; HTC and SigEP retain their GNM procedures. SigEP defaults to the
+joint-tail calculation from the supplied Python 3 reference; its published
+upper-bound calculation is available through ``--sigep-bound official``.
 """
 
 from __future__ import annotations
@@ -218,8 +220,9 @@ def run_experiment(
     repetitions: int = REPETITIONS,
     output: Path = Path("experiment_results/simulated_method_comparison"),
     save_node_results: bool = False,
-    null_models: tuple[str, ...] = ("gnm", "configuration", "chung_lu"),
+    null_models: tuple[str, ...] = ("gnm",),
     settings: tuple[Any, ...] = SETTINGS,
+    sigep_bound: str = "exact",
 ) -> None:
     if null_graphs < 1 or repetitions < 1:
         raise ValueError("null_graphs and repetitions must be positive")
@@ -228,6 +231,13 @@ def run_experiment(
     unknown_models = set(null_models) - NULL_MODELS.keys()
     if not null_models or unknown_models:
         raise ValueError(f"null_models must be selected from {', '.join(NULL_MODELS)}")
+    if sigep_bound not in ("exact", "official", "tight"):
+        raise ValueError("sigep_bound must be 'exact', 'official', or 'tight'")
+    sigep_method = {
+        "exact": "SigEP (joint tail)",
+        "official": "SigEP (author bound)",
+        "tight": "SigEP (degree-tightened)",
+    }[sigep_bound]
 
     output.mkdir(parents=True, exist_ok=True)
     summary_rows: list[dict[str, Any]] = []
@@ -305,14 +315,16 @@ def run_experiment(
                     )
 
                 started = time.perf_counter()
-                sigep_p = sigep_p_values(network)
-                sigep_reported = benjamini_hochberg(sigep_p, alpha)
+                sigep_p = sigep_p_values(network, mode=sigep_bound)
+                sigep_reported = benjamini_hochberg(
+                    sigep_p, alpha, strict=sigep_bound != "exact"
+                )
                 sigep_adjusted = benjamini_hochberg_adjusted(sigep_p)
                 sigep_runtime = time.perf_counter() - started
                 summary_rows.append(
                     _evaluate_decisions(
                         setting.name, graph_class, replicate, network.name, network.n,
-                        network.m, setting.p, network.hubs, "SigEP", "degree+clustering",
+                        network.m, setting.p, network.hubs, sigep_method, "degree+clustering",
                         sigep_reported, sigep_runtime, "gnm",
                     )
                 )
@@ -320,7 +332,7 @@ def run_experiment(
                     node_writer.writerows(
                         _metric_result_rows(
                             network.name, network.n, network.hubs, sigep_p, sigep_reported,
-                            "SigEP", "degree+clustering", sigep_adjusted, "gnm",
+                            sigep_method, "degree+clustering", sigep_adjusted, "gnm",
                         )
                     )
     finally:
@@ -334,7 +346,8 @@ def run_experiment(
         "# Simulated method comparison\n\n"
         f"Alpha = {alpha}; repetitions per setting = {repetitions}; "
         f"null graphs per target for the proposed method = {null_graphs}; "
-        f"proposed null models = {', '.join(null_models)}. HTC and SigEP use GNM only.\n\n"
+        f"proposed null models = {', '.join(null_models)}. HTC and SigEP use GNM only. "
+        f"SigEP bound = {sigep_bound}.\n\n"
         "The table reports mean nodes classified as central, mean nodes classified as non-central, "
         "mean false positives, mean accuracy, and mean method runtime. Classification metrics "
         "are averaged across graphs within each setting.\n\n"
@@ -350,6 +363,7 @@ def run_experiment(
                 "repetitions": repetitions,
                 "proposed_null_models": list(null_models),
                 "baseline_null_model": "gnm",
+                "sigep_bound": sigep_bound,
                 "null_graphs_per_target": null_graphs,
                 "positive_hub_ratio": 10,
                 "positive_hub_fraction": 0.01,
@@ -374,12 +388,16 @@ def main() -> None:
     parser.add_argument("--repetitions", type=int, default=REPETITIONS)
     parser.add_argument("--alpha", type=float, default=ALPHA)
     parser.add_argument(
+        "--sigep-bound", choices=("exact", "official", "tight"), default="exact",
+        help="joint tail from the supplied reference, author bound, or degree-tightened bound",
+    )
+    parser.add_argument(
         "--pilot", action="store_true",
         help="use four 200-node positive/negative settings for a quick pilot",
     )
     parser.add_argument(
         "--null-models", nargs="+", choices=tuple(NULL_MODELS),
-        default=("gnm", "configuration", "chung_lu"),
+        default=("gnm",),
         help="null models for the proposed method; HTC and SigEP always use GNM",
     )
     parser.add_argument(
@@ -399,6 +417,7 @@ def main() -> None:
         args.seed, args.null_graphs, args.alpha, args.repetitions, args.output,
         args.save_node_results, tuple(args.null_models),
         PILOT_SETTINGS if args.pilot else SETTINGS,
+        args.sigep_bound,
     )
 
 

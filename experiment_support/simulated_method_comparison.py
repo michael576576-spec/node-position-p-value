@@ -12,7 +12,7 @@ from experiment_support.simulation_data import _gnm_edges_for_simulation, make_g
 
 
 ALPHA = 0.01
-NULL_GRAPHS = 1000
+NULL_GRAPHS = 100
 REPETITIONS = 10
 METRIC_ORDER = ("degree", "harmonic", "betweenness", "pagerank")
 

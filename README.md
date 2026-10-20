@@ -1,9 +1,14 @@
 # 节点中心性模拟实验
 
-在本项目目录下运行以下命令。需要 Python 3.10 或更新版本；两套实验使用
-同一个经验 p 值算法，但目标图的生成方式不同。中心性指标由 `--metric`
-指定，可选 `degree`、`harmonic`、`betweenness`、`pagerank`，默认是 `degree`。
-非度指标需要 NetworkX，绘图需要 matplotlib。
+在本项目目录下运行以下命令。需要 Python 3.10 或更新版本。历史模拟与真实网络实验的
+中心性指标可由 `--metric` 指定，可选 `degree`、`harmonic`、`betweenness`、`pagerank`，
+默认是 `degree`。这些历史实验的非度指标需要 NetworkX，绘图需要 matplotlib。
+
+GNP 方法比较实验还需要 `igraph`、NumPy 和 SciPy：
+
+```powershell
+python -m pip install igraph numpy scipy
+```
 
 `degree` 使用原始度数；在固定节点数的图上，将其除以 `N-1` 得到的标准化
 度中心性只改变尺度，不改变排序或经验 p 值。其余三个指标分别使用 NetworkX
@@ -17,34 +22,47 @@
 `real_network_model_budget_comparison.py`。共用算法和历史实验入口放在
 `experiment_support/`；历史入口从项目根目录使用 `python -m experiment_support.<模块名>` 运行。
 
-## 原来的正例与负例实验
+## GNP 模拟图方法比较实验
 
 ```powershell
 python -m experiment_support.experiment
 ```
 
-它运行 10 组 GNM 负例和 10 组植入中心节点的正例，每组使用 50 个随机种子。
-每张目标图分别用 100 张匹配实际节点数和边数的 GNM 图计算经验 p 值。
-原正例生成器固定的是**期望边数**，实际边数会波动。
+该入口按 [experiment.md](experiment.md) 生成 4 组负例和 4 组正例，每组 10 张图。
+负例和正例均覆盖 `N=1000`、`N=5000` 与 `p=0.01`、`p=0.005`；正例中心节点占 1%，
+其相关边的生成概率为普通节点边概率的 10 倍。比较本文方法的 DC、HC、BC、PR，
+以及 HTC、SigEP。默认显著性阈值为 `0.01`；本文方法默认每张目标图使用 100 张 GNM 零图。
+configuration 和 Chung–Lu 仍可通过 `--null-models` 选择。HTC 使用 Bonferroni 校正，SigEP 使用原论文的
+FDR 校正；这两种对比方法仍按各自论文使用 GNM。正负例汇总统一报告判定为中心节点数、
+判定为非中心节点数、False Positives 和 Accuracy，并保留运行时间等实验信息。
 
-主要结果：
+SigEP 默认采用用户提供的 Python 3 参考脚本中的条件超几何联合尾概率，乘以 N 后按 `<=` BH 阈值判定；
+`--sigep-bound official` 保留[作者公开仓库](https://github.com/yanganggood/sigep)的组合上界和严格 `<` BH 规则，
+`--sigep-bound tight` 则对作者上界加入度数尾概率的收紧。三种计算在结果中使用不同的方法名。
+代码使用模拟图显式给出的节点集，保留孤立节点。
 
-- `experiment_results/basic_experiment/network_summary.md`：原始 p 值判定的 20 组汇总。
-- `experiment_results/basic_experiment/bonferroni_comparison.md`：校正前后的报告数、检出数、误报数。
-- `experiment_results/basic_experiment/negative_replicates.csv` 与
-  `experiment_results/basic_experiment/positive_replicates.csv`：各组逐次结果。
+结果写入独立的 `experiment_results/simulated_method_comparison/` 目录，包括逐图汇总、
+按参数条件汇总和 settings 配置记录。添加 `--save-node-results` 可另存逐节点 p 值，
+该文件可能较大。旧模拟结果不会被覆盖。
 
-可用 `--metric`、`--repetitions`、`--null-graphs`、`--alpha`、`--seed`
-和 `--output` 修改运行参数。例如：
+可用 `--repetitions`、`--null-graphs`、`--null-models`、`--alpha`、`--seed` 和 `--output` 修改运行参数：
 
 ```powershell
-python -m experiment_support.experiment --metric harmonic
+python -m experiment_support.experiment --null-graphs 100 --null-models gnm --alpha 0.01 --repetitions 10
 ```
 
-非度指标默认写入 `experiment_results/<metric>_experiment/`，避免覆盖
-度中心性的原实验结果。原实验为每张目标图重新生成零模型；介数中心性在完整
-原实验上会花较长时间。要在相同图上快速比较多种指标，使用下方的
-`experiment_support/compare_metrics.py`。
+如需单独评估 HTC 在 `G(1000, 0.01)` 负例和 10 倍中心边概率正例上的表现，运行：
+
+```powershell
+python -m experiment_support.htc_single_setting --repetitions 10 --alpha 0.01 --seed 42
+```
+
+先用小网络做流程检查时，可加 `--pilot`。该模式使用 200 个节点、两档边概率的正负例，
+但仍可单独指定重复数和零图数。例如：
+
+```powershell
+python -m experiment_support.experiment --pilot --repetitions 3 --null-graphs 100 --output experiment_results/simulated_method_comparison_pilot
+```
 
 ## 固定参数的连边概率倍率实验
 
@@ -93,14 +111,14 @@ python -m pip install networkx matplotlib
 
 ## 选择零模型
 
-`experiment_support/experiment.py`、`experiment_support/ratio_sweep.py` 和
-`experiment_support/compare_metrics.py` 都接受
-`--null-model gnm|configuration|chung_lu`，默认 `gnm`。例如：
+`experiment_support/ratio_sweep.py` 和 `experiment_support/compare_metrics.py` 接受
+`--null-model gnm|configuration|chung_lu`，默认 `gnm`；模拟图方法比较入口用
+`--null-models` 选择本文方法的零模型，默认只用 GNM。HTC、SigEP 仅运行其 GNM 版本。例如：
 
 ```powershell
 python -m experiment_support.ratio_sweep --metric harmonic --null-model configuration --repetitions 5 --null-graphs 1000
 python -m experiment_support.compare_metrics --null-model chung_lu --metrics harmonic pagerank --repetitions 5 --null-graphs 1000
-python -m experiment_support.experiment --null-model configuration --metric betweenness --repetitions 1 --null-graphs 1000
+python -m experiment_support.experiment --null-models configuration chung_lu --repetitions 1 --null-graphs 1000
 ```
 
 `gnm` 固定节点数和边数；当前倍率实验对每张目标图分别生成零分布，同一张目标图的四种指标使用相同的零图随机种子。

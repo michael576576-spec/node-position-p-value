@@ -2,16 +2,16 @@
 
 Both methods use a simple undirected graph and the G(N, M) null model. HTC
 uses the paper's approximate degree-neighbor-sum distribution and a
-Bonferroni decision rule. SigEP ports the p-value calculation and BH decision
-semantics from the authors' MIT-licensed implementation at
-https://github.com/yanganggood/sigep, using log-combinations for numerical
-stability and adapting it to the project's explicit node set (including
-isolates).
+Bonferroni decision rule. SigEP can use the conditional hypergeometric joint
+tail from the supplied Python 3 reference or the combinatorial bound and BH
+rule from the authors' MIT-licensed implementation at
+https://github.com/yanganggood/sigep. These implementations retain the
+project's explicit node set, including isolates.
 """
 
 from __future__ import annotations
 
-from math import floor, sqrt
+from math import exp, floor, log, sqrt
 
 from experiment_support.network_core import Network
 
@@ -115,13 +115,82 @@ def htc_p_values(network: Network) -> list[float]:
     ]
 
 
-def sigep_p_values(network: Network) -> list[float]:
-    """Return the official SigEP upper bounds, including its N multiplier.
+def _sigep_exact_joint_p_values(
+    network: Network,
+    degrees: list[int],
+    triangles: list[int],
+    wedges: list[int],
+    np,
+    gammaln,
+    log_total: float,
+) -> list[float]:
+    """Evaluate the joint G(n,m) tail from the supplied Python 3 reference.
 
-    For clustering coefficient zero, Equation (1)'s degree tail is used;
-    otherwise Equation (10)'s joint degree/clustering upper bound is used.
-    The authors' implementation multiplies both cases by N before BH.
+    Conditional on degree i, the remaining m-i edges are sampled from all
+    non-incident pairs. Edges between the i neighbors therefore have a
+    hypergeometric distribution. Any omitted degree strata contribute their
+    full probability mass, preserving a conservative upper bound.
     """
+    from scipy.stats import hypergeom
+
+    n, m = network.n, network.m
+    total_pairs = n * (n - 1) // 2
+    nonincident = total_pairs - (n - 1)
+    maximum_degree = min(n - 1, m)
+    degree_values = np.arange(maximum_degree + 1, dtype=np.int64)
+    log_degree_mass = (
+        _log_choose_array(n - 1, degree_values, np, gammaln)
+        + _log_choose_array(nonincident, m - degree_values, np, gammaln)
+        - log_total
+    )
+    degree_mass = np.exp(log_degree_mass)
+    degree_tail = np.empty(maximum_degree + 2, dtype=float)
+    degree_tail[-1] = 0.0
+    degree_tail[:-1] = np.cumsum(degree_mass[::-1])[::-1]
+    meaningful_degrees = np.flatnonzero(degree_tail[:-1] > 1e-16)
+    effective_maximum = int(meaningful_degrees[-1]) if meaningful_degrees.size else 0
+
+    cache: dict[tuple[int, int], float] = {}
+    results: list[float] = []
+    for degree, triangle_count, wedge_count in zip(degrees, triangles, wedges):
+        key = (degree, triangle_count)
+        if key not in cache:
+            degree_bound = min(1.0, max(0.0, float(degree_tail[degree])))
+            if degree_bound < 1e-12 or degree < 2 or triangle_count == 0:
+                joint_bound = degree_bound
+            else:
+                candidate_degrees = np.arange(degree, effective_maximum + 1, dtype=np.int64)
+                neighbor_pairs = candidate_degrees * (candidate_degrees - 1) // 2
+                required_edges = (
+                    triangle_count * neighbor_pairs + wedge_count - 1
+                ) // wedge_count
+                conditional_tail = hypergeom.sf(
+                    required_edges - 1,
+                    nonincident,
+                    neighbor_pairs,
+                    m - candidate_degrees,
+                )
+                # The remaining strata have at most this much probability.
+                joint_bound = float(
+                    np.dot(degree_mass[candidate_degrees], conditional_tail)
+                    + degree_tail[effective_maximum + 1]
+                )
+                joint_bound = min(degree_bound, max(0.0, joint_bound))
+            cache[key] = min(1.0, n * joint_bound)
+        results.append(cache[key])
+    return results
+
+
+def sigep_p_values(network: Network, *, mode: str = "exact") -> list[float]:
+    """Return N-scaled SigEP values using the selected G(n,m) calculation.
+
+    ``exact`` follows the supplied Python 3 reference's conditional
+    hypergeometric joint tail. ``official`` retains the authors' published
+    combinatorial upper bound; ``tight`` intersects that upper bound with the
+    degree-only tail. All modes cap the N-scaled value at one before BH.
+    """
+    if mode not in ("exact", "official", "tight"):
+        raise ValueError("SigEP mode must be 'exact', 'official', or 'tight'")
     n, m = network.n, network.m
     np, gammaln, logsumexp = _numeric_tools()
     total_pairs = n * (n - 1) // 2
@@ -130,26 +199,32 @@ def sigep_p_values(network: Network) -> list[float]:
         raise ValueError("invalid G(n, m) parameters for SigEP")
 
     degrees, _, triangles, wedges = _network_statistics(network)
+    if mode == "exact":
+        return _sigep_exact_joint_p_values(
+            network, degrees, triangles, wedges, np, gammaln, log_total
+        )
     degree_tail_cache: dict[int, float] = {}
+
+    def scaled_degree_bound(degree: int) -> float:
+        if degree not in degree_tail_cache:
+            d_values = np.arange(degree, min(n - 1, m) + 1, dtype=np.int64)
+            log_terms = (
+                _log_choose_array(n - 1, d_values, np, gammaln)
+                + _log_choose_array(total_pairs - (n - 1), m - d_values, np, gammaln)
+                - log_total
+            )
+            degree_tail_cache[degree] = float(logsumexp(log_terms)) if log_terms.size else -np.inf
+        log_probability = log(n) + degree_tail_cache[degree]
+        return 1.0 if log_probability >= 0 else exp(log_probability)
+
     p_values = []
     for degree, triangle_count, wedge_count in zip(degrees, triangles, wedges):
         if degree < 2 or wedge_count == 0 or triangle_count == 0:
             # With observed clustering coefficient zero, the joint event
             # reduces to the degree upper tail under G(n, m) (SigEP Eq. 1).
-            if degree not in degree_tail_cache:
-                d_values = np.arange(degree, min(n - 1, m) + 1, dtype=np.int64)
-                log_terms = (
-                    _log_choose_array(n - 1, d_values, np, gammaln)
-                    + _log_choose_array(total_pairs - (n - 1), m - d_values, np, gammaln)
-                    - log_total
-                )
-                log_tail = float(logsumexp(log_terms)) if log_terms.size else -np.inf
-                degree_tail_cache[degree] = (
-                    float(np.exp(log_tail)) if np.isfinite(log_tail) else 0.0
-                )
             # The official implementation multiplies every node's upper-bound
             # p-value by N before applying BH, including the c = 0 case.
-            p_values.append(n * degree_tail_cache[degree])
+            p_values.append(scaled_degree_bound(degree))
             continue
 
         coefficient_numerator = triangle_count
@@ -179,20 +254,26 @@ def sigep_p_values(network: Network) -> list[float]:
         log_probability = (
             float(np.log(n) + logsumexp(log_terms)) if log_terms.size else -np.inf
         )
-        p_values.append(float(np.exp(log_probability)) if np.isfinite(log_probability) else 0.0)
+        joint_bound = 1.0 if log_probability >= 0 else exp(log_probability)
+        p_values.append(
+            min(joint_bound, scaled_degree_bound(degree)) if mode == "tight" else joint_bound
+        )
     return p_values
 
 
-def benjamini_hochberg(p_values: list[float], alpha: float) -> list[bool]:
-    """Return SigEP's BH discoveries at the requested FDR level."""
+def benjamini_hochberg(
+    p_values: list[float], alpha: float, *, strict: bool = True
+) -> list[bool]:
+    """Return BH discoveries, with the authors' strict rule by default."""
     if not 0 < alpha < 1:
         raise ValueError("alpha must be between 0 and 1")
     ordered = sorted(enumerate(p_values), key=lambda item: (item[1], item[0]))
     largest = 0
     count = len(ordered)
     for rank, (_, p_value) in enumerate(ordered, start=1):
-        # Match the strict inequality used by the authors' reference code.
-        if p_value < alpha * rank / count:
+        threshold = alpha * rank / count
+        # The authors use <; the supplied Python 3 reference uses <=.
+        if p_value < threshold or (not strict and p_value == threshold):
             largest = rank
     reported = [False] * count
     for node, _ in ordered[:largest]:
