@@ -1,6 +1,6 @@
 """Scan hub strength and hub count across several fixed-(N,M) scenarios.
 
-Each target graph is shared by three null models and four centrality metrics.
+Each target graph is shared by three null models and six centrality metrics.
 Only Bonferroni-adjusted decisions are used. Completed graph/model pairs are
 checkpointed for resumption.
 """
@@ -141,7 +141,7 @@ def summarize(root: Path, targets, scenarios, ratios, hub_counts,
         f"每个参数点 {repetitions} 张目标图，每张目标图/零模型 {null_graphs} 张零图。",
         (f"强度扫描固定 K={baseline_hubs}。" if "strength" in sweeps else "")
         + (f"数量扫描固定概率比={count_ratio:g}。" if "count" in sweeps else ""),
-        "各场景分别汇总，三种零模型使用相同目标图。DC、HC、BC、PR 共享各模型的零图。",
+        "各场景分别汇总，三种零模型使用相同目标图。DC、LAC、EC、BC、CC、GPG 共享各模型的零图。",
         f"只使用 Bonferroni 校正 p 值，阈值为 {alpha}；无报告时 Precision 和 F1 记为 0。",
         "Recall、Precision、F1 先逐图计算再求平均；阴影为均值的近似 95% 区间（正态标准误，截断到 0–1）。",
         "固定 N、M 和概率比时，增加 K 会降低中心边及普通边的边际概率；"

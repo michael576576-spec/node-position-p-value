@@ -14,7 +14,7 @@ from experiment_support.simulation_data import _gnm_edges_for_simulation, make_g
 ALPHA = 0.01
 NULL_GRAPHS = 100
 REPETITIONS = 10
-METRIC_ORDER = ("degree", "harmonic", "betweenness", "pagerank")
+METRIC_ORDER = ("degree", "lac", "eigenvector", "betweenness", "closeness", "gpg")
 
 
 @dataclass(frozen=True)
@@ -29,14 +29,14 @@ SETTINGS = tuple(
     SimulationSetting(f"G{index}", n, p, positive)
     for index, (n, p, positive) in enumerate(
         (
+            (500, 0.01, False),
+            (500, 0.005, False),
             (1000, 0.01, False),
             (1000, 0.005, False),
-            (5000, 0.01, False),
-            (5000, 0.005, False),
+            (500, 0.01, True),
+            (500, 0.005, True),
             (1000, 0.01, True),
             (1000, 0.005, True),
-            (5000, 0.01, True),
-            (5000, 0.005, True),
         ),
         start=1,
     )

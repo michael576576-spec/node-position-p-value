@@ -17,6 +17,7 @@ import sys
 import tempfile
 import time
 from bisect import bisect_right
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
@@ -24,7 +25,8 @@ import numpy as np
 from experiment_support.centrality import METRICS, compute_multiple_scores_igraph
 
 
-LABELS = {"degree": "DC", "harmonic": "HC", "betweenness": "BC", "pagerank": "PR"}
+LABELS = {"degree": "DC", "lac": "LAC", "eigenvector": "EC",
+          "betweenness": "BC", "closeness": "CC", "gpg": "GPG"}
 
 
 def load_edgelist(path: Path) -> tuple[list[str], tuple[tuple[int, int], ...], dict]:
@@ -124,6 +126,16 @@ def analyze_network(
     }
 
 
+def compute_checkpoint(source: Path, metrics: tuple[str, ...], budget: int,
+                       alpha: float, seed: int, checkpoint: Path) -> tuple[str, int, int, float]:
+    data = analyze_network(source, metrics, budget, alpha, seed)
+    temporary = checkpoint.with_name(f"{checkpoint.stem}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    os.replace(temporary, checkpoint)
+    cleaning = data["cleaning"]
+    return source.stem, cleaning["nodes"], cleaning["edges"], data["seconds"]
+
+
 def write_csv(path: Path, rows: list[dict], fieldnames: list[str]) -> None:
     with path.open("w", newline="", encoding="utf-8-sig") as file:
         writer = csv.DictWriter(file, fieldnames=fieldnames)
@@ -192,14 +204,15 @@ def main() -> None:
                         help="Run only files with at most this many observed nodes")
     parser.add_argument("--metrics", nargs="+", choices=tuple(METRICS),
                         default=tuple(METRICS))
-    parser.add_argument("--budget", type=int, default=1000)
+    parser.add_argument("--budget", type=int, default=100)
+    parser.add_argument("--workers", type=int, default=min(4, os.cpu_count() or 1))
     parser.add_argument("--alpha", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=20261014)
     parser.add_argument("--output", type=Path,
-                        default=Path("experiment_results/real_network_gnm_full"))
+                        default=Path("experiment_results/real_network_six_metrics_gnm_b100_v1"))
     args = parser.parse_args()
-    if args.budget < 1 or not 0 < args.alpha < 1:
-        parser.error("budget must be positive and alpha must be between 0 and 1")
+    if args.budget < 1 or args.workers < 1 or not 0 < args.alpha < 1:
+        parser.error("budget and workers must be positive; alpha must be between 0 and 1")
     paths = sorted(args.network_dir.glob("*.txt"), key=lambda path: path.stem.lower())
     if args.names:
         requested = set(args.names)
@@ -219,6 +232,7 @@ def main() -> None:
         "names": [path.stem for path in paths], "metrics": metrics,
         "budget": args.budget, "alpha": args.alpha, "seed": args.seed,
         "null_model": "GNM", "sampling": "fixed_budget_no_early_stop",
+        "metric_version": "six_metrics_v1",
     }
     args.output.mkdir(parents=True, exist_ok=True)
     settings_path = args.output / "settings.json"
@@ -227,6 +241,7 @@ def main() -> None:
     settings_path.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
     checkpoint_dir = args.output / "checkpoints"
     checkpoint_dir.mkdir(exist_ok=True)
+    pending = []
     for index, path in enumerate(paths, start=1):
         checkpoint = checkpoint_dir / f"{path.stem}.json"
         if checkpoint.exists():
@@ -235,13 +250,16 @@ def main() -> None:
                 raise ValueError(f"source changed since checkpoint: {path}")
             print(f"[{index}/{len(paths)}] {path.stem}: cached", flush=True)
             continue
-        data = analyze_network(path, metrics, args.budget, args.alpha, args.seed)
-        temporary = checkpoint.with_suffix(".tmp")
-        temporary.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-        os.replace(temporary, checkpoint)
-        print(f"[{index}/{len(paths)}] {path.stem}: n={data['cleaning']['nodes']}, "
-              f"m={data['cleaning']['edges']}, null={data['null_graphs']}, "
-              f"seconds={data['seconds']:.2f}", flush=True)
+        pending.append((path, checkpoint))
+    if pending:
+        with ProcessPoolExecutor(max_workers=args.workers) as executor:
+            futures = [executor.submit(compute_checkpoint, path, metrics, args.budget,
+                                       args.alpha, args.seed, checkpoint)
+                       for path, checkpoint in pending]
+            for finished, future in enumerate(as_completed(futures), start=1):
+                name, n, m, seconds = future.result()
+                print(f"[{len(paths) - len(pending) + finished}/{len(paths)}] "
+                      f"{name}: n={n}, m={m}, null={args.budget}, seconds={seconds:.2f}", flush=True)
     summarize(args.output, [path.stem for path in paths], metrics, settings)
     print(f"Report: {args.output / 'report.md'}", flush=True)
 

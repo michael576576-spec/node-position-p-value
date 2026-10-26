@@ -2,7 +2,7 @@
 
 Each input edge list is converted to an undirected, unweighted simple graph.
 For each target graph and null model, the smaller null sample is a prefix of
-the larger one. All four centralities share each generated null graph.
+the larger one. All six centralities share each generated null graph.
 """
 
 from __future__ import annotations

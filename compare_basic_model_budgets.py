@@ -27,7 +27,8 @@ from experiment_support.ratio_sweep import classification_rates
 
 MODELS = ("gnm", "configuration", "chung_lu")
 METRIC_ORDER = tuple(METRICS)
-METRIC_LABELS = {"degree": "DC", "harmonic": "HC", "betweenness": "BC", "pagerank": "PR"}
+METRIC_LABELS = {"degree": "DC", "lac": "LAC", "eigenvector": "EC",
+                 "betweenness": "BC", "closeness": "CC", "gpg": "GPG"}
 
 NEGATIVE_SPECS = (
     (52, 78), (56, 95), (58, 105), (62, 115), (64, 130),

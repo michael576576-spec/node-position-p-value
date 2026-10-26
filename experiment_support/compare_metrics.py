@@ -16,9 +16,11 @@ from experiment_support.ratio_sweep import DEFAULT_RATIOS, run_sweep
 
 METRIC_LABELS = {
     "degree": "Degree (DC)",
-    "harmonic": "Harmonic (HC)",
+    "lac": "Local average connectivity (LAC)",
+    "eigenvector": "Eigenvector (EC)",
     "betweenness": "Betweenness (BC)",
-    "pagerank": "PageRank (PR)",
+    "closeness": "Closeness (CC)",
+    "gpg": "Geometric potential gain (GPG)",
 }
 
 def write_comparison_plot(output: Path, rows: list[dict[str, float | str]], metrics: tuple[str, ...]) -> bool:
