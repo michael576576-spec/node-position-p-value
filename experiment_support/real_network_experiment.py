@@ -25,7 +25,7 @@ import numpy as np
 from experiment_support.centrality import METRICS, compute_multiple_scores_igraph
 
 
-LABELS = {"degree": "DC", "lac": "LAC", "eigenvector": "EC",
+LABELS = {"degree": "DC", "pagerank": "PR",
           "betweenness": "BC", "closeness": "CC", "gpg": "GPG"}
 
 
@@ -209,7 +209,7 @@ def main() -> None:
     parser.add_argument("--alpha", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=20261014)
     parser.add_argument("--output", type=Path,
-                        default=Path("experiment_results/real_network_six_metrics_gnm_b100_v1"))
+                        default=Path("experiment_results/real_network_five_metrics_gnm_b100_v1"))
     args = parser.parse_args()
     if args.budget < 1 or args.workers < 1 or not 0 < args.alpha < 1:
         parser.error("budget and workers must be positive; alpha must be between 0 and 1")
@@ -232,7 +232,7 @@ def main() -> None:
         "names": [path.stem for path in paths], "metrics": metrics,
         "budget": args.budget, "alpha": args.alpha, "seed": args.seed,
         "null_model": "GNM", "sampling": "fixed_budget_no_early_stop",
-        "metric_version": "six_metrics_v1",
+        "metric_version": "five_metrics_v1",
     }
     args.output.mkdir(parents=True, exist_ok=True)
     settings_path = args.output / "settings.json"

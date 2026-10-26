@@ -16,8 +16,7 @@ from experiment_support.ratio_sweep import DEFAULT_RATIOS, run_sweep
 
 METRIC_LABELS = {
     "degree": "Degree (DC)",
-    "lac": "Local average connectivity (LAC)",
-    "eigenvector": "Eigenvector (EC)",
+    "pagerank": "PageRank (PR)",
     "betweenness": "Betweenness (BC)",
     "closeness": "Closeness (CC)",
     "gpg": "Geometric potential gain (GPG)",

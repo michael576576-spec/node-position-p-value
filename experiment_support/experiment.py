@@ -32,8 +32,7 @@ from experiment_support.null_models import NULL_MODELS
 
 METRIC_LABELS = {
     "degree": "DC",
-    "lac": "LAC",
-    "eigenvector": "EC",
+    "pagerank": "PR",
     "betweenness": "BC",
     "closeness": "CC",
     "gpg": "GPG",
@@ -180,7 +179,7 @@ def run_experiment(
     null_graphs: int = NULL_GRAPHS,
     alpha: float = ALPHA,
     repetitions: int = REPETITIONS,
-    output: Path = Path("experiment_results/benchmark_n500_n1000_six_metrics_v1"),
+    output: Path = Path("experiment_results/benchmark_n500_n1000_five_metrics_v1"),
     save_node_results: bool = False,
     null_models: tuple[str, ...] = ("gnm",),
     settings: tuple[Any, ...] = SETTINGS,
@@ -197,7 +196,7 @@ def run_experiment(
         if not settings_path.exists():
             raise ValueError(f"output contains unversioned results: {output}")
         previous_settings = json.loads(settings_path.read_text(encoding="utf-8"))
-        if previous_settings.get("comparison_version") != "six_metrics_v1":
+        if previous_settings.get("comparison_version") != "five_metrics_v1":
             raise ValueError(f"output contains results from another comparison: {output}")
     output.mkdir(parents=True, exist_ok=True)
     summary_rows: list[dict[str, Any]] = []
@@ -280,7 +279,7 @@ def run_experiment(
                 "alpha": alpha,
                 "repetitions": repetitions,
                 "proposed_null_models": list(null_models),
-                "comparison_version": "six_metrics_v1",
+                "comparison_version": "five_metrics_v1",
                 "null_graphs_per_target": null_graphs,
                 "positive_hub_ratio": 6,
                 "positive_hub_fraction": 0.01,
@@ -315,7 +314,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--output", type=Path,
-        default=Path("experiment_results/benchmark_n500_n1000_six_metrics_v1"),
+        default=Path("experiment_results/benchmark_n500_n1000_five_metrics_v1"),
     )
     parser.add_argument(
         "--save-node-results", action="store_true",

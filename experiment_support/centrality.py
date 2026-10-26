@@ -39,21 +39,10 @@ def betweenness(n: int, edges: tuple[Edge, ...]) -> list[float]:
     return [float(values[node]) for node in range(n)]
 
 
-def lac(n: int, edges: tuple[Edge, ...]) -> list[float]:
-    nx, graph = _networkx_graph(n, edges, "lac")
-    degrees = dict(graph.degree())
-    triangles = nx.triangles(graph)
-    return [2.0 * triangles[node] / degrees[node] if degrees[node] else 0.0
-            for node in range(n)]
-
-
-def eigenvector(n: int, edges: tuple[Edge, ...]) -> list[float]:
-    nx, graph = _networkx_graph(n, edges, "eigenvector")
-    if not edges:
-        return [0.0] * n
-    values = nx.eigenvector_centrality(graph, max_iter=1000, tol=1e-9)
-    maximum = max(values.values(), default=0.0)
-    return [float(values[node] / maximum) if maximum else 0.0 for node in range(n)]
+def pagerank(n: int, edges: tuple[Edge, ...]) -> list[float]:
+    nx, graph = _networkx_graph(n, edges, "pagerank")
+    values = nx.pagerank(graph, alpha=0.85, tol=1e-12, max_iter=1000)
+    return [float(values[node]) for node in range(n)]
 
 
 def closeness(n: int, edges: tuple[Edge, ...]) -> list[float]:
@@ -94,8 +83,7 @@ def gpg(n: int, edges: tuple[Edge, ...]) -> list[float]:
 
 METRICS: dict[str, MetricFunction] = {
     "degree": degree,
-    "lac": lac,
-    "eigenvector": eigenvector,
+    "pagerank": pagerank,
     "betweenness": betweenness,
     "closeness": closeness,
     "gpg": gpg,
@@ -113,7 +101,7 @@ def compute_scores(n: int, edges: tuple[Edge, ...], metric: str) -> list[float]:
 def compute_multiple_scores(
     n: int, edges: tuple[Edge, ...], metrics: tuple[str, ...]
 ) -> dict[str, list[float]]:
-    """Score one graph with several metrics while constructing NetworkX once."""
+    """Score one graph with several metrics using the NetworkX implementations."""
     unknown = set(metrics) - METRICS.keys()
     if unknown:
         raise ValueError(f"unknown metrics: {', '.join(sorted(unknown))}")
@@ -126,7 +114,7 @@ def compute_multiple_scores(
 def compute_multiple_scores_igraph(
     n: int, edges: tuple[Edge, ...], metrics: tuple[str, ...]
 ) -> dict[str, list[float]]:
-    """Compute the six selected unweighted metrics with igraph and SciPy."""
+    """Compute the five selected unweighted metrics with igraph and SciPy."""
     try:
         import igraph as ig
     except ImportError as exc:
@@ -138,21 +126,14 @@ def compute_multiple_scores_igraph(
     scores: dict[str, list[float]] = {}
     if "degree" in metrics:
         scores["degree"] = [float(value) for value in graph.degree()]
-    if "lac" in metrics:
-        degrees = graph.degree()
-        clustering = graph.transitivity_local_undirected(mode="zero")
-        scores["lac"] = [float(clustering[node] * (degrees[node] - 1)) if degrees[node] > 1 else 0.0
-                         for node in range(n)]
+    if "pagerank" in metrics:
+        scores["pagerank"] = [float(value) for value in graph.pagerank(directed=False, damping=0.85)]
     eigenvalue = 0.0
-    if "eigenvector" in metrics or "gpg" in metrics:
+    if "gpg" in metrics:
         if graph.ecount():
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", message="Some eigenvector centralities are nearly zero", category=RuntimeWarning)
-                eigen_scores, eigenvalue = graph.eigenvector_centrality(return_eigenvalue=True)
-        else:
-            eigen_scores = [0.0] * n
-        if "eigenvector" in metrics:
-            scores["eigenvector"] = [float(value) for value in eigen_scores]
+                eigenvalue = graph.eigenvector_centrality(return_eigenvalue=True)[1]
     if "betweenness" in metrics:
         scale = 2 / ((n - 1) * (n - 2)) if n > 2 else 0.0
         scores["betweenness"] = [value * scale for value in graph.betweenness(directed=False)]

@@ -55,7 +55,7 @@ def run_target(
     model: str, ratio: float, repetition: int, network: Network,
     null_graphs: int, alpha: float, seed: int, path: Path,
 ) -> str:
-    """Generate one shared collection of null graphs and score all six metrics."""
+    """Generate one shared collection of null graphs and score all five metrics."""
     metrics = METRIC_ORDER
     generator = NULL_MODELS[model]
     rng = random.Random(
@@ -266,7 +266,7 @@ def main() -> None:
     parser.add_argument("--alpha", type=float, default=0.01)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--workers", type=int, default=min(8, os.cpu_count() or 1))
-    parser.add_argument("--output", type=Path, default=Path("experiment_results/strength_n100_m350_k6_six_metrics_v1"))
+    parser.add_argument("--output", type=Path, default=Path("experiment_results/strength_n100_m350_k6_five_metrics_v1"))
     args = parser.parse_args()
     matplotlib_dir = Path(tempfile.gettempdir()) / "node_position_pvalue_matplotlib"
     matplotlib_dir.mkdir(parents=True, exist_ok=True)
@@ -285,7 +285,7 @@ def main() -> None:
         "repetitions": args.repetitions, "null_graphs": args.null_graphs,
         "alpha": args.alpha, "seed": args.seed, "models": MODELS, "metrics": METRIC_ORDER,
         "pooling": "all_nodes_per_target", "backend": BACKEND,
-        "comparison_version": "six_metrics_v1",
+        "comparison_version": "five_metrics_v1",
         "version": 7,
     }
     if args.output.exists() and any(args.output.iterdir()) and not (args.output / "settings.json").exists():
@@ -347,7 +347,7 @@ def main() -> None:
         "# Null model and centrality comparison", "",
         f"N={args.n}, M={args.m}, planted hubs={args.hubs}; "
         f"{args.repetitions} target graphs per strength and {args.null_graphs} null graphs per target/model.",
-        f"Six centrality metrics use Bonferroni p < {args.alpha}.",
+        f"Five centrality metrics use Bonferroni p < {args.alpha}.",
         "Only the centrality metrics are included in this comparison.", "",
         "| Strength | Null model | Metric | Recall | Precision | F1 | Mean reported | Mean false positives |",
         "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |",
