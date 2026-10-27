@@ -1,6 +1,6 @@
 """Empirically calibrate an equal-weight combination of five centrality p-values.
 
-Run with ``python -m experiment_support.pvalue_fusion --suite all``. Each target
+Run with ``python pvalue_fusion.py --suite all``. Each target
 uses independent reference (A) and calibration (B) null-graph streams.
 """
 

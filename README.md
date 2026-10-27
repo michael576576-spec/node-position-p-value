@@ -264,7 +264,7 @@ python real_network_model_budget_comparison.py --metrics degree pagerank between
 ## 五指标经验 p 值融合
 
 ```powershell
-python -m experiment_support.pvalue_fusion --suite all --workers 4
+python pvalue_fusion.py --suite all --workers 4
 ```
 
 该入口分别运行基础正负例（80 张目标图）、中心节点强度（80 张目标图）和
