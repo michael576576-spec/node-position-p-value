@@ -260,3 +260,36 @@ python real_network_model_budget_comparison.py --metrics degree pagerank between
 
 
 历史 HTC、SigEP 对比结果仅作存档；当前实验代码不再运行这两种方法。
+
+## 五指标经验 p 值融合
+
+```powershell
+python -m experiment_support.pvalue_fusion --suite all --workers 4
+```
+
+该入口分别运行基础正负例（80 张目标图）、中心节点强度（80 张目标图）和
+55 张真实网络；三组测试都对每张目标图分别使用 GNM、配置模型和 Chung–Lu，
+共 `240 + 240 + 165 = 645` 个“目标图 × 零模型”组合。每个“目标图 ×
+零模型”独立生成 500 张参考零图 A 和 500 张校准零图 B。A 中所有节点的五项
+中心性分数分别构成单指标经验零分布；目标节点和 B 中节点均参照 A 计算右尾
+经验 p 值，平局计入尾部。五指标 DC、PR、BC、CC、GPG 等权融合分数为
+`S = -2 × Σ log(p_k)`。再用 B 中所有节点的 S 校准目标节点的融合 p 值，
+最后按目标图节点数做 Bonferroni 校正。A 与 B 使用独立随机种子；最终只报告
+目标图中的节点。
+
+三个测试统一使用 Bonferroni 校正后 `p < 0.01` 作为显著性标准。
+新结果位于 `experiment_results/equal_weight_p_fusion_a500_b500_v3/` 的三个实验子目录；
+旧的 `equal_weight_p_fusion_v1/` 结果保留，其中真实网络采用的是 `0.05` 阈值。
+`node_results.csv` 给出目标节点的各指标分数、p 值、融合分数、融合 p 值、
+排名与标签；`graph_summary.csv` 和 `aggregate_summary.csv` 对照融合及五个单指标。
+模拟图另有平均精度 AP 和 Precision@K；真实网络没有中心节点真值标签，另输出
+`top_nodes.csv`。逐图 JSON 检查点支持同参数续跑。
+
+强度实验完成后，可用 `python plot_fusion_strength.py` 根据
+`strength/aggregate_summary.csv` 生成九宫格对比图
+`strength/comparison.png` 和 `strength/comparison.svg`：三行对应零模型，
+三列对应 Recall、Precision、F1，包含融合方法和五个单指标。
+
+500 张 B 零图且显著性阈值为 0.01 时，经 Bonferroni 校正后的融合显著节点
+最多允许 4 个 B 节点达到或超过其融合分数。配置模型中的 DC 仍是相对随机节点
+整体的比较，不能解释为固定节点度数后的显著性。
